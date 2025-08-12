@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+**/dist
+**/.git
+**/.gitignore
+**/README.md
+**/.env
+**/.env.*
+**/*.log
+**/.DS_Store
+**/coverage
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+.yarn/cache
+.yarn/install-state.gz
