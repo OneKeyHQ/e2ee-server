@@ -1,5 +1,5 @@
 import { Provide, Scope, ScopeEnum } from '@midwayjs/core';
-import { IKafkaAdapter, ISyncNotificationData } from '@onekeyhq/sync';
+import { IKafkaAdapter, ISyncNotificationData } from '@onekeyhq/cloud-sync-server';
 
 @Provide()
 @Scope(ScopeEnum.Singleton)

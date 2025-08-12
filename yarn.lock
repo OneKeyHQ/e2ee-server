@@ -1233,9 +1233,74 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@onekeyhq/e2ee-server@workspace:packages/e2ee-server":
+"@onekeyhq/cloud-sync-server@workspace:*, @onekeyhq/cloud-sync-server@workspace:packages/cloud-sync-server":
   version: 0.0.0-use.local
-  resolution: "@onekeyhq/e2ee-server@workspace:packages/e2ee-server"
+  resolution: "@onekeyhq/cloud-sync-server@workspace:packages/cloud-sync-server"
+  dependencies:
+    "@types/jest": "npm:^29.0.0"
+    "@types/lodash": "npm:^4.14.200"
+    "@typescript-eslint/eslint-plugin": "npm:^5.0.0"
+    "@typescript-eslint/parser": "npm:^5.0.0"
+    eslint: "npm:^7.32.0"
+    eslint-config-prettier: "npm:^8.5.0"
+    eslint-plugin-prettier: "npm:^4.0.0"
+    jest: "npm:^29.0.0"
+    lodash: "npm:^4.17.21"
+    prettier: "npm:^2.8.8"
+    ts-jest: "npm:^29.0.0"
+    typescript: "npm:^5.0.0"
+  peerDependencies:
+    "@midwayjs/core": ^3.0.0
+    "@midwayjs/decorator": ^3.0.0
+    "@midwayjs/logger": ^2.0.0
+    "@midwayjs/validate": ^3.0.0
+    mongoose: ^7.0.0
+  languageName: unknown
+  linkType: soft
+
+"@onekeyhq/mock-app@workspace:examples/mock-app":
+  version: 0.0.0-use.local
+  resolution: "@onekeyhq/mock-app@workspace:examples/mock-app"
+  dependencies:
+    "@midwayjs/bootstrap": "npm:^3.20.0"
+    "@midwayjs/cli": "npm:^2.1.1"
+    "@midwayjs/core": "npm:^3.20.11"
+    "@midwayjs/decorator": "npm:^3.20.11"
+    "@midwayjs/koa": "npm:^3.20.0"
+    "@midwayjs/logger": "npm:^3.4.2"
+    "@midwayjs/mock": "npm:^3.20.11"
+    "@midwayjs/validate": "npm:^3.20.12"
+    "@onekeyhq/cloud-sync-server": "workspace:*"
+    "@types/jest": "npm:^29.0.0"
+    "@types/node": "npm:^20.0.0"
+    "@typescript-eslint/eslint-plugin": "npm:^5.0.0"
+    "@typescript-eslint/parser": "npm:^5.0.0"
+    cross-env: "npm:^10.0.0"
+    eslint: "npm:^7.32.0"
+    jest: "npm:^29.0.0"
+    mongoose: "npm:^8.17.1"
+    nodemon: "npm:^3.0.0"
+    ts-jest: "npm:^29.0.0"
+    typescript: "npm:^5.0.0"
+  languageName: unknown
+  linkType: soft
+
+"@onekeyhq/monorepo@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@onekeyhq/monorepo@workspace:."
+  dependencies:
+    "@midwayjs/core": "npm:^3.20.11"
+    "@midwayjs/decorator": "npm:^3.20.11"
+    "@midwayjs/logger": "npm:^3.4.2"
+    "@midwayjs/validate": "npm:^3.20.12"
+    mongoose: "npm:^8.17.1"
+    rimraf: "npm:^5.0.5"
+  languageName: unknown
+  linkType: soft
+
+"@onekeyhq/transfer-server@workspace:packages/transfer-server":
+  version: 0.0.0-use.local
+  resolution: "@onekeyhq/transfer-server@workspace:packages/transfer-server"
   dependencies:
     "@noble/hashes": "npm:^1.8.0"
     "@onekeyfe/cross-inpage-provider-core": "npm:^2.2.34"
@@ -1259,71 +1324,6 @@ __metadata:
     socket.io-client: "npm:^4.7.5"
     ts-node: "npm:^10.9.0"
     typescript: "npm:^5.3.0"
-  languageName: unknown
-  linkType: soft
-
-"@onekeyhq/monorepo@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "@onekeyhq/monorepo@workspace:."
-  dependencies:
-    "@midwayjs/core": "npm:^3.20.11"
-    "@midwayjs/decorator": "npm:^3.20.11"
-    "@midwayjs/logger": "npm:^3.4.2"
-    "@midwayjs/validate": "npm:^3.20.12"
-    mongoose: "npm:^8.17.1"
-    rimraf: "npm:^5.0.5"
-  languageName: unknown
-  linkType: soft
-
-"@onekeyhq/sync-mock-app@workspace:packages/sync-mock-app":
-  version: 0.0.0-use.local
-  resolution: "@onekeyhq/sync-mock-app@workspace:packages/sync-mock-app"
-  dependencies:
-    "@midwayjs/bootstrap": "npm:^3.20.0"
-    "@midwayjs/cli": "npm:^2.1.1"
-    "@midwayjs/core": "npm:^3.20.11"
-    "@midwayjs/decorator": "npm:^3.20.11"
-    "@midwayjs/koa": "npm:^3.20.0"
-    "@midwayjs/logger": "npm:^3.4.2"
-    "@midwayjs/mock": "npm:^3.20.11"
-    "@midwayjs/validate": "npm:^3.20.12"
-    "@onekeyhq/sync": "npm:^1.0.0"
-    "@types/jest": "npm:^29.0.0"
-    "@types/node": "npm:^20.0.0"
-    "@typescript-eslint/eslint-plugin": "npm:^5.0.0"
-    "@typescript-eslint/parser": "npm:^5.0.0"
-    cross-env: "npm:^10.0.0"
-    eslint: "npm:^7.32.0"
-    jest: "npm:^29.0.0"
-    mongoose: "npm:^8.17.1"
-    nodemon: "npm:^3.0.0"
-    ts-jest: "npm:^29.0.0"
-    typescript: "npm:^5.0.0"
-  languageName: unknown
-  linkType: soft
-
-"@onekeyhq/sync@npm:^1.0.0, @onekeyhq/sync@workspace:packages/sync":
-  version: 0.0.0-use.local
-  resolution: "@onekeyhq/sync@workspace:packages/sync"
-  dependencies:
-    "@types/jest": "npm:^29.0.0"
-    "@types/lodash": "npm:^4.14.200"
-    "@typescript-eslint/eslint-plugin": "npm:^5.0.0"
-    "@typescript-eslint/parser": "npm:^5.0.0"
-    eslint: "npm:^7.32.0"
-    eslint-config-prettier: "npm:^8.5.0"
-    eslint-plugin-prettier: "npm:^4.0.0"
-    jest: "npm:^29.0.0"
-    lodash: "npm:^4.17.21"
-    prettier: "npm:^2.8.8"
-    ts-jest: "npm:^29.0.0"
-    typescript: "npm:^5.0.0"
-  peerDependencies:
-    "@midwayjs/core": ^3.0.0
-    "@midwayjs/decorator": ^3.0.0
-    "@midwayjs/logger": ^2.0.0
-    "@midwayjs/validate": ^3.0.0
-    mongoose: ^7.0.0
   languageName: unknown
   linkType: soft
 

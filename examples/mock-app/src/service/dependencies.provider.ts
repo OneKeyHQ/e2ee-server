@@ -1,5 +1,5 @@
 import { Provide, Scope, ScopeEnum } from '@midwayjs/core';
-import { ISyncDependenciesProvider, ISyncErrors, ITraceHeaders } from '@onekeyhq/sync';
+import { ISyncDependenciesProvider, ISyncErrors, ITraceHeaders } from '@onekeyhq/cloud-sync-server';
 
 @Provide()
 @Scope(ScopeEnum.Singleton)

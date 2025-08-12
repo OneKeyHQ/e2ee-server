@@ -1,5 +1,5 @@
 {
-  "name": "@onekeyhq/e2ee-server",
+  "name": "@onekeyhq/transfer-server",
   "version": "1.0.0",
   "private": true,
   "description": "OneKey End-to-End Encryption Server",

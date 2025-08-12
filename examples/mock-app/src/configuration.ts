@@ -2,7 +2,7 @@ import { Configuration, IMidwayContainer, App } from '@midwayjs/core';
 import { Application } from '@midwayjs/koa';
 import * as koa from '@midwayjs/koa';
 import * as validate from '@midwayjs/validate';
-import * as syncComponent from '@onekeyhq/sync';
+import * as syncComponent from '@onekeyhq/cloud-sync-server';
 import { join } from 'path';
 import { MongodbAdapterImpl } from './adapter/mongodb.adapter';
 import { KafkaAdapterImpl } from './adapter/kafka.adapter';

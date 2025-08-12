@@ -1,5 +1,5 @@
 import { Provide, Scope, ScopeEnum } from '@midwayjs/core';
-import { IMongodbAdapter } from '@onekeyhq/sync';
+import { IMongodbAdapter } from '@onekeyhq/cloud-sync-server';
 
 @Provide()
 @Scope(ScopeEnum.Singleton)
@@ -105,7 +105,8 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
           this.syncData.set(userId, []);
         }
         
-        const userSyncData = this.syncData.get(userId)!;
+        const userSyncData = this.syncData.get(userId) || [];
+        this.syncData.set(userId, userSyncData);
         const existingIndex = userSyncData.findIndex(item => 
           item.key === filter.key && item.dataType === filter.dataType
         );
@@ -141,7 +142,8 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
       this.historyData.set(key, []);
     }
     
-    const history = this.historyData.get(key)!;
+    const history = this.historyData.get(key) || [];
+    this.historyData.set(key, history);
     records.forEach(record => {
       const existingIndex = history.findIndex(h => 
         h.key === record.key && h.dataType === record.dataType
@@ -160,8 +162,13 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
   }
 
   async upsertLock(userId: string, lock: any, nonce: number): Promise<any> {
+    const existed = this.lockData.has(userId);
     this.lockData.set(userId, { ...lock, userId, nonce });
-    return { acknowledged: true };
+    return { 
+      acknowledged: true,
+      modifiedCount: existed ? 1 : 0,
+      upsertedCount: existed ? 0 : 1,
+    };
   }
 
   async deleteLockByUserId(userId: string): Promise<any> {

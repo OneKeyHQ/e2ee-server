@@ -4,22 +4,23 @@
   "private": true,
   "description": "OneKey Monorepo",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "examples/*"
   ],
   "scripts": {
     "build": "yarn workspaces foreach --all run build",
-    "build:sync": "yarn workspace @onekeyhq/sync build",
-    "build:mock": "yarn workspace @onekeyhq/sync-mock-app build",
-    "dev": "yarn workspace @onekeyhq/e2ee-server dev",
-    "dev:sync": "yarn workspace @onekeyhq/sync dev",
-    "dev:mock": "yarn workspace @onekeyhq/sync-mock-app dev",
-    "start": "yarn workspace @onekeyhq/e2ee-server start",
-    "start:mock": "yarn workspace @onekeyhq/sync-mock-app start",
+    "build:sync": "yarn workspace @onekeyhq/cloud-sync-server build",
+    "build:mock": "yarn workspace @onekeyhq/mock-app build",
+    "dev": "yarn workspace @onekeyhq/transfer-server dev",
+    "dev:sync": "yarn workspace @onekeyhq/cloud-sync-server dev",
+    "dev:mock": "yarn workspace @onekeyhq/mock-app dev",
+    "start": "yarn workspace @onekeyhq/transfer-server start",
+    "start:mock": "yarn workspace @onekeyhq/mock-app start",
     "test": "yarn workspaces foreach --all run test",
-    "test:sync": "yarn workspace @onekeyhq/sync test",
-    "test:mock": "yarn workspace @onekeyhq/sync-mock-app test",
+    "test:sync": "yarn workspace @onekeyhq/cloud-sync-server test",
+    "test:mock": "yarn workspace @onekeyhq/mock-app test",
     "lint": "yarn workspaces foreach --all run lint",
-    "lint:sync": "yarn workspace @onekeyhq/sync lint",
+    "lint:sync": "yarn workspace @onekeyhq/cloud-sync-server lint",
     "clean": "yarn workspaces foreach --all run clean"
   },
   "devDependencies": {

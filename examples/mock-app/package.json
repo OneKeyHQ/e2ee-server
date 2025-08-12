@@ -1,5 +1,5 @@
 {
-  "name": "@onekeyhq/sync-mock-app",
+  "name": "@onekeyhq/mock-app",
   "version": "1.0.0",
   "description": "Mock application for testing sync component",
   "main": "dist/index.js",
@@ -18,7 +18,7 @@
     "@midwayjs/koa": "^3.20.0",
     "@midwayjs/logger": "^3.4.2",
     "@midwayjs/validate": "^3.20.12",
-    "@onekeyhq/sync": "^1.0.0",
+    "@onekeyhq/cloud-sync-server": "workspace:*",
     "mongoose": "^8.17.1"
   },
   "devDependencies": {

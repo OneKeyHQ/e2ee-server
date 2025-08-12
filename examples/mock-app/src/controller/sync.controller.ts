@@ -14,7 +14,7 @@ import {
   PrimeSyncService,
   PrimeSyncUploadRequestDTO,
   IPrimeUser,
-} from '@onekeyhq/sync';
+} from '@onekeyhq/cloud-sync-server';
 
 @Controller('/sync')
 export class SyncController {

@@ -1,5 +1,5 @@
 {
-  "name": "@onekeyhq/sync",
+  "name": "@onekeyhq/cloud-sync-server",
   "version": "1.0.0",
   "description": "OneKey Prime Sync Component",
   "main": "dist/index.js",
