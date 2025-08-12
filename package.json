@@ -8,8 +8,18 @@
   ],
   "scripts": {
     "build": "yarn workspaces foreach --all run build",
+    "build:sync": "yarn workspace @onekeyhq/sync build",
+    "build:mock": "yarn workspace @onekeyhq/sync-mock-app build",
     "dev": "yarn workspace @onekeyhq/e2ee-server dev",
+    "dev:sync": "yarn workspace @onekeyhq/sync dev",
+    "dev:mock": "yarn workspace @onekeyhq/sync-mock-app dev",
     "start": "yarn workspace @onekeyhq/e2ee-server start",
+    "start:mock": "yarn workspace @onekeyhq/sync-mock-app start",
+    "test": "yarn workspaces foreach --all run test",
+    "test:sync": "yarn workspace @onekeyhq/sync test",
+    "test:mock": "yarn workspace @onekeyhq/sync-mock-app test",
+    "lint": "yarn workspaces foreach --all run lint",
+    "lint:sync": "yarn workspace @onekeyhq/sync lint",
     "clean": "yarn workspaces foreach --all run clean"
   },
   "devDependencies": {
@@ -17,5 +27,12 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@midwayjs/core": "^3.20.11",
+    "@midwayjs/decorator": "^3.20.11",
+    "@midwayjs/logger": "^3.4.2",
+    "@midwayjs/validate": "^3.20.12",
+    "mongoose": "^8.17.1"
   }
 }
