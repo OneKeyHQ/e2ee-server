@@ -1,4 +1,5 @@
 import { createServer } from 'http';
+import { networkInterfaces } from 'os';
 
 import cors from 'cors';
 import express from 'express';
@@ -209,20 +210,79 @@ class E2EEServer {
     socket.removeAllListeners();
   }
 
+  private getNetworkIPs(): string[] {
+    const interfaces = networkInterfaces();
+    const ips: string[] = [];
+    
+    for (const name of Object.keys(interfaces)) {
+      const netInterface = interfaces[name];
+      if (netInterface) {
+        for (const net of netInterface) {
+          // Skip over non-IPv4 and internal (i.e. 127.0.0.1) addresses
+          if (net.family === 'IPv4' && !net.internal) {
+            ips.push(net.address);
+          }
+        }
+      }
+    }
+    
+    return ips;
+  }
+
   public startServer(): void {
     this.httpServer.listen(this.config.port, () => {
+      const networkIPs = this.getNetworkIPs();
+      
+      // Calculate padding for proper alignment (box width is 58 chars inside)
+      const boxWidth = 58;
+      
+      const portText = `🚀 Server started successfully`;
+      const portLine = `║  ${portText}${' '.repeat(boxWidth - portText.length - 2)} ║`;
+      
+      const portInfoText = `📡 Port: ${this.config.port}`;
+      const portInfoLine = `║  ${portInfoText}${' '.repeat(boxWidth - portInfoText.length - 2)} ║`;
+      
+      const usersText = `👥 Max room users: ${this.config.roomConfig.maxUsers}`;
+      const usersLine = `║  ${usersText}${' '.repeat(boxWidth - usersText.length - 2)} ║`;
+      
+      const timeoutMinutes = Math.floor(this.config.roomConfig.roomTimeout / 60_000);
+      const timeoutText = `⏰ Room timeout: ${timeoutMinutes} minutes`;
+      const timeoutLine = `║  ${timeoutText}${' '.repeat(boxWidth - timeoutText.length - 2)} ║`;
+      
+      const localhostTitleText = `🏠 Localhost`;
+      const localhostTitleLine = `║  ${localhostTitleText}${' '.repeat(boxWidth - localhostTitleText.length - 2)} ║`;
+      
+      const localhostEndpointText = `  - endpoint: http://localhost:${this.config.port}`;
+      const localhostEndpointLine = `║  ${localhostEndpointText}${' '.repeat(boxWidth - localhostEndpointText.length - 2)} ║`;
+      
+      const localhostHealthText = `  - health: http://localhost:${this.config.port}/health`;
+      const localhostHealthLine = `║  ${localhostHealthText}${' '.repeat(boxWidth - localhostHealthText.length - 2)} ║`;
+      
+      const networkLines = networkIPs.map(ip => {
+        const lanTitleText = `🔗 LAN (${ip})`;
+        const lanTitleLine = `║  ${lanTitleText}${' '.repeat(boxWidth - lanTitleText.length - 2)} ║`;
+        
+        const lanEndpointText = `  - endpoint: http://${ip}:${this.config.port}`;
+        const lanEndpointLine = `║  ${lanEndpointText}${' '.repeat(boxWidth - lanEndpointText.length - 2)} ║`;
+        
+        const lanHealthText = `  - health: http://${ip}:${this.config.port}/health`;
+        const lanHealthLine = `║  ${lanHealthText}${' '.repeat(boxWidth - lanHealthText.length - 2)} ║`;
+        
+        return `${lanTitleLine}\n${lanEndpointLine}\n${lanHealthLine}`;
+      }).join('\n');
+      
       console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║                E2EE Server                        ║
+║                    E2EE Server                           ║
 ║                                                          ║
-║  🚀 Server started successfully                            ║
-║  📡 Port: ${this.config.port.toString().padEnd(49)} ║
-║  👥 Max room users: ${this.config.roomConfig.maxUsers.toString().padEnd(37)} ║
-║  ⏰ Room timeout: ${Math.floor(this.config.roomConfig.roomTimeout / 60_000)
-        .toString()
-        .padEnd(43)} minutes ║
+${portLine}
+${portInfoLine}
+${usersLine}
+${timeoutLine}
 ║                                                          ║
-║  Health check: http://localhost:${this.config.port}/health         ║
+${localhostTitleLine}
+${localhostEndpointLine}
+${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
 ╚══════════════════════════════════════════════════════════╝
       `);
     });
