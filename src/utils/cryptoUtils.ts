@@ -8,6 +8,7 @@ import {
 } from 'asmcrypto.js';
 import { nanoid } from 'nanoid';
 
+import { E2eeError, E2eeErrorCode } from '../errors';
 import bufferUtils from './bufferUtils';
 import stringUtils from './stringUtils';
 
@@ -18,13 +19,13 @@ type IAesGcmInvokeParams = {
 };
 function _aesGcmInvokeCheck({ iv, key, data }: IAesGcmInvokeParams) {
   if (!iv || iv.length <= 0) {
-    throw new Error('Zero-length iv is not supported');
+    throw new E2eeError(E2eeErrorCode.ZERO_LENGTH_IV, 'Zero-length iv is not supported');
   }
   if (!key || key.length <= 0) {
-    throw new Error('Zero-length key is not supported');
+    throw new E2eeError(E2eeErrorCode.ZERO_LENGTH_KEY, 'Zero-length key is not supported');
   }
   if (!data || data.length <= 0) {
-    throw new Error('Zero-length data is not supported');
+    throw new E2eeError(E2eeErrorCode.ZERO_LENGTH_DATA, 'Zero-length data is not supported');
   }
 }
 
@@ -49,7 +50,7 @@ function aesGcmDecryptByAsmcrypto({
   _aesGcmInvokeCheck({ iv, key, data });
 
   if (!tag || tag.length !== 16) {
-    throw new Error('Invalid authentication tag');
+    throw new E2eeError(E2eeErrorCode.INVALID_AUTH_TAG, 'Invalid authentication tag');
   }
 
   // Combine ciphertext and tag for asmcrypto
@@ -63,7 +64,7 @@ function sha256ByAsmcrypto(data: Buffer): Buffer {
     .process(data)
     .finish().result;
   if (!result) {
-    throw new Error('Failed to hash data by Sha256ByAsmcrypto');
+    throw new E2eeError(E2eeErrorCode.HASH_FAILED, 'Failed to hash data by Sha256ByAsmcrypto');
   }
   return Buffer.from(result);
 }
@@ -128,7 +129,8 @@ export default class CryptoUtils {
         tag: bufferUtils.bytesToHex(tag),
       };
     } catch (error) {
-      throw new Error(
+      throw new E2eeError(
+        E2eeErrorCode.ENCRYPTION_FAILED,
         `Encryption failed: ${
           error instanceof Error ? error.message : 'Unknown error'
         }`,
@@ -161,14 +163,16 @@ export default class CryptoUtils {
       const decryptedText = bufferUtils.bytesToUtf8(decrypted);
 
       if (!decryptedText) {
-        throw new Error(
+        throw new E2eeError(
+          E2eeErrorCode.DECRYPTION_FAILED,
           'Decryption result is empty, possibly due to wrong key or corrupted data',
         );
       }
 
       return decryptedText;
     } catch (error) {
-      throw new Error(
+      throw new E2eeError(
+        E2eeErrorCode.DECRYPTION_FAILED,
         `Decryption failed: ${
           error instanceof Error ? error.message : 'Unknown error'
         }`,

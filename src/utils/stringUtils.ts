@@ -1,4 +1,5 @@
 /* eslint-disable no-restricted-syntax */
+import { E2eeError, E2eeErrorCode } from '../errors';
 function addSeparatorToString({
   str,
   groupSize,
@@ -13,7 +14,7 @@ function addSeparatorToString({
     return str;
   }
   if (groupSize <= 0) {
-    throw new Error('Group size must be a positive number');
+    throw new E2eeError(E2eeErrorCode.INVALID_GROUP_SIZE, 'Group size must be a positive number');
   }
 
   const segments = [];
@@ -49,10 +50,10 @@ function randomString(
 
   // Input validation
   if (length <= 0) {
-    throw new Error('Length must be a positive number');
+    throw new E2eeError(E2eeErrorCode.INVALID_LENGTH, 'Length must be a positive number');
   }
   if (!chars || chars.length === 0) {
-    throw new Error('Character set cannot be empty');
+    throw new E2eeError(E2eeErrorCode.EMPTY_CHARACTER_SET, 'Character set cannot be empty');
   }
 
   let result = '';

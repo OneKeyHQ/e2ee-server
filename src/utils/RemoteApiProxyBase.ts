@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return,  @typescript-eslint/no-unsafe-member-access */
 
 import { isMethodAllowed } from '../decorators/e2eeApiMethod';
+import { E2eeError, E2eeErrorCode } from '../errors';
 
 import type { IRoomManagerContext } from '../roomManager';
 import type { IJsonRpcRequest } from '@onekeyfe/cross-inpage-provider-types';
@@ -16,13 +17,14 @@ export function buildCallRemoteApiMethod<T extends IJsonRpcRequest>(
     // @ts-ignore
     const module = message?.module as any;
     if (!module) {
-      throw new Error('callRemoteApiMethod ERROR: module is required');
+      throw new E2eeError(E2eeErrorCode.MODULE_REQUIRED, 'callRemoteApiMethod ERROR: module is required');
     }
     const moduleInstance: any = await moduleGetter(module);
     if (moduleInstance && moduleInstance[method]) {
       // Check if the method is allowed via the whitelist
       if (!isMethodAllowed(moduleInstance, method)) {
-        throw new Error(
+        throw new E2eeError(
+          E2eeErrorCode.METHOD_NOT_IMPLEMENTED,
           `Method ${method} is not allowed. Use @e2eeApiMethod() decorator to whitelist it.`,
         );
       }
@@ -40,7 +42,7 @@ export function buildCallRemoteApiMethod<T extends IJsonRpcRequest>(
       module as string
     }.${method}() `;
 
-    throw new Error(errorMessage);
+    throw new E2eeError(E2eeErrorCode.API_CALL_FAILED, errorMessage);
   };
 }
 
@@ -95,7 +97,7 @@ abstract class RemoteApiProxyBase {
   ): any {
     const nameStr = name as string;
     if (this._moduleCreatedNames[nameStr]) {
-      throw new Error(`_createProxyService name duplicated. name=${nameStr}`);
+      throw new E2eeError(E2eeErrorCode.DUPLICATE_SERVICE_NAME, `_createProxyService name duplicated. name=${nameStr}`);
     }
     this._moduleCreatedNames[nameStr] = true;
     const proxy: any = new Proxy(

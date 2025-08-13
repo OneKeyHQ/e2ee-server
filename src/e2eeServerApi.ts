@@ -3,6 +3,7 @@
 /* eslint-disable new-cap */
 
 import { JsBridgeE2EEServer } from './JsBridgeE2EEServer';
+import { E2eeError, E2eeErrorCode } from './errors';
 import { memoizee } from './utils/cacheUtils';
 import { buildCallRemoteApiMethod } from './utils/RemoteApiProxyBase';
 
@@ -23,7 +24,7 @@ function createBridgeE2EEServer({
       if (name === 'roomManager') {
         return roomManager;
       }
-      throw new Error(`Unknown E2EE Server API module: ${name as string}`);
+      throw new E2eeError(E2eeErrorCode.UNKNOWN_API_MODULE, `Unknown E2EE Server API module: ${name as string}`);
     },
     {
       promise: true,

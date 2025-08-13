@@ -1,3 +1,5 @@
+import { E2eeError, E2eeErrorCode } from '../errors';
+
 const MS_ONE_SECOND = 1000;
 const MS_ONE_MINUTE = 60 * MS_ONE_SECOND;
 const MS_ONE_HOUR = 60 * MS_ONE_MINUTE;
@@ -41,7 +43,7 @@ const wait = (ms: number) =>
 
 const timeout = <T>(p: Promise<T>, ms: number, message?: string) =>
   new Promise<T>((resolve, reject) => {
-    setTimeout(() => reject(new Error(message || 'Timeout')), ms);
+    setTimeout(() => reject(new E2eeError(E2eeErrorCode.OPERATION_TIMEOUT, message || 'Timeout')), ms);
     p.then((value) => resolve(value)).catch((err) => reject(err));
   });
 

@@ -7,6 +7,7 @@ import {
 } from '@noble/hashes/utils';
 import { isString } from 'lodash';
 
+import { E2eeError, E2eeErrorCode } from '../errors';
 import hexUtils from './hexUtils';
 
 function toBuffer(
@@ -22,7 +23,7 @@ function toBuffer(
     // buffer from hex string in default
     const buff = Buffer.from(data, encoding);
     if (buff.length === 0 && data.length > 0) {
-      throw new Error(`data not matched to encoding: ${encoding}`);
+      throw new E2eeError(E2eeErrorCode.INVALID_ENCODING, `data not matched to encoding: ${encoding}`);
     }
     return buff;
   }

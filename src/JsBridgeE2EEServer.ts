@@ -7,6 +7,7 @@ import type {
   IJsonRpcRequest,
 } from '@onekeyfe/cross-inpage-provider-types';
 import type { Socket } from 'socket.io';
+import { E2eeError, E2eeErrorCode } from './errors';
 
 const RATE_LIMIT_INTERVAL_MS = 3000;
 const lastRequestTime: Map<string, number> = new Map();
@@ -85,7 +86,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         sendErrorResponse: () => {
           this.responseError({
             id: p.id || -9999,
-            error: new Error(`Rate limit, please try again later`),
+            error: new E2eeError(E2eeErrorCode.RATE_LIMIT_EXCEEDED, 'Rate limit, please try again later'),
             scope: p.scope,
             remoteId: p.remoteId,
             peerOrigin: p.peerOrigin,
@@ -112,10 +113,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         sendErrorResponse: () => {
           this.responseError({
             id: p.id || -9999,
-            error: {
-              message: `Rate limit,2222 please try again later`,
-              code: CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE,
-            },
+            error: new E2eeError(E2eeErrorCode.RATE_LIMIT_EXCEEDED, 'Rate limit, please try again later'),
             scope: p.scope,
             remoteId: p.remoteId,
             peerOrigin: p.peerOrigin,
