@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY packages/transfer-server/ ./packages/transfer-server/
 # Build the transfer-server
 RUN yarn workspace @onekeyhq/transfer-server build
 
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 

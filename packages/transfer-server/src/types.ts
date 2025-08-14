@@ -1,6 +1,9 @@
 import type { RoomManager } from './roomManager';
 import type { IJsBridgeMessagePayload } from '@onekeyfe/cross-inpage-provider-types';
 
+// Export error classes
+export { E2eeError, E2eeErrorCode } from './errors';
+
 // Socket.IO event type definitions
 export interface IServerToClientEvents {
   'room-created': (data: { roomId: string; encryptionKey: string }) => void;

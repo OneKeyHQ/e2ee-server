@@ -1,14 +1,15 @@
 /* eslint-disable no-restricted-syntax */
 
-import { sortBy } from 'lodash';
+import { sortBy } from "lodash";
 
-import { e2eeApiMethod } from './decorators/e2eeApiMethod';
-import cryptoUtils from './utils/cryptoUtils';
-import stringUtils from './utils/stringUtils';
-import timerUtils from './utils/timerUtils';
+import { e2eeApiMethod } from "./decorators/e2eeApiMethod";
+import { E2eeError, E2eeErrorCode } from "./errors";
+import cryptoUtils from "./utils/cryptoUtils";
+import stringUtils from "./utils/stringUtils";
+import timerUtils from "./utils/timerUtils";
 
-import type { IE2EESocketUserInfo, IRoom, IRoomConfig } from './types';
-import type { Socket, Server as SocketIOServer } from 'socket.io';
+import type { Socket, Server as SocketIOServer } from "socket.io";
+import type { IE2EESocketUserInfo, IRoom, IRoomConfig } from "./types";
 
 export type IRoomManagerContext = {
   socketClient: Socket;
@@ -44,9 +45,7 @@ export class RoomManager {
    * @returns Room information (room ID and encryption key)
    */
   @e2eeApiMethod()
-  async createRoom(
-    context?: IRoomManagerContext,
-  ): Promise<{ roomId: string; encryptionKey: string }> {
+  async createRoom(): Promise<{ roomId: string; encryptionKey: string }> {
     await timerUtils.wait(1000);
     let roomId: string;
 
@@ -57,7 +56,7 @@ export class RoomManager {
       // If room ID already exists, wait 1 second then regenerate
       if (this.rooms.has(roomId)) {
         console.log(
-          `[RoomManager] Room ID ${roomId} already exists, waiting 1 second to regenerate`,
+          `[RoomManager] Room ID ${roomId} already exists, waiting 1 second to regenerate`
         );
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -80,6 +79,21 @@ export class RoomManager {
     return { roomId, encryptionKey };
   }
 
+  @e2eeApiMethod()
+  async joinRoomAfterCreate(
+    params: {
+      roomId: string;
+      appPlatform: string;
+      appPlatformName: string;
+      appVersion: string;
+      appBuildNumber: string;
+      appDeviceName: string;
+    },
+    context?: IRoomManagerContext
+  ) {
+    return this.joinRoom(params, context);
+  }
+
   /**
    * User join room
    * @param roomId Room ID
@@ -97,7 +111,7 @@ export class RoomManager {
       appBuildNumber: string;
       appDeviceName: string;
     },
-    context?: IRoomManagerContext,
+    context?: IRoomManagerContext
   ): Promise<{
     success: boolean;
     userId?: string;
@@ -108,28 +122,34 @@ export class RoomManager {
   }> {
     await timerUtils.wait(1000);
     if (!context) {
-      throw new Error('context is required');
+      throw new E2eeError(
+        E2eeErrorCode.CONTEXT_REQUIRED,
+        "context is required"
+      );
     }
     const { roomId } = params;
     const socketId = context?.socketClient.id;
     // Validate room ID and key format
     if (!cryptoUtils.isValidRoomId(roomId)) {
-      throw new Error('Invalid room ID');
+      throw new E2eeError(E2eeErrorCode.INVALID_ROOM_ID, "Invalid room ID");
     }
 
     const room = this.rooms.get(roomId);
     if (!room) {
-      throw new Error('Room not found');
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
     // Check if room is full
     if (room.users.size >= room.maxUsers) {
-      this.socketServer.to(roomId).emit('room-full', {
+      this.socketServer.to(roomId).emit("room-full", {
         roomId,
         userCount: room.users.size,
       });
 
-      throw new Error('Connection Rejected');
+      throw new E2eeError(
+        E2eeErrorCode.CONNECTION_REJECTED,
+        "Connection Rejected"
+      );
     }
 
     // Check if user is already in room (by socketId)
@@ -162,7 +182,7 @@ export class RoomManager {
     room.lastActivity = new Date();
 
     console.log(
-      `[RoomManager] User ${userId} joined room ${roomId}, current user count: ${room.users.size}`,
+      `[RoomManager] User ${userId} joined room ${roomId}, current user count: ${room.users.size}`
     );
 
     await context?.socketClient.join(roomId);
@@ -185,48 +205,54 @@ export class RoomManager {
   @e2eeApiMethod()
   async leaveRoom(
     params: { roomId: string; userId: string },
-    context?: IRoomManagerContext,
+    context?: IRoomManagerContext
   ): Promise<{
     success: boolean;
     userCount?: number;
     roomDestroyed?: boolean;
   }> {
     if (!context) {
-      throw new Error('context is required');
+      throw new E2eeError(
+        E2eeErrorCode.CONTEXT_REQUIRED,
+        "context is required"
+      );
     }
 
     const { roomId, userId } = params;
     const room = this.rooms.get(roomId);
     if (!room) {
-      throw new Error('Room not found');
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
     const socketValidation = this.isUserInRoom(
       roomId,
-      context?.socketClient.id,
+      context?.socketClient.id
     );
     if (!socketValidation.isInRoom) {
-      throw new Error('Socket must be in the room');
+      throw new E2eeError(
+        E2eeErrorCode.SOCKET_NOT_IN_ROOM,
+        "Socket must be in the room"
+      );
     }
 
     if (socketValidation.userId !== userId) {
-      throw new Error('User not found');
+      throw new E2eeError(E2eeErrorCode.USER_NOT_FOUND, "User not found");
     }
 
     const userRemoved = room.users.delete(userId);
     if (!userRemoved) {
-      throw new Error('User not found');
+      throw new E2eeError(E2eeErrorCode.USER_NOT_FOUND, "User not found");
     }
 
     room.lastActivity = new Date();
 
     console.log(
-      `[RoomManager] User ${userId} left room ${roomId}, remaining users: ${room.users.size}`,
+      `[RoomManager] User ${userId} left room ${roomId}, remaining users: ${room.users.size}`
     );
 
     await context.socketClient.leave(roomId);
 
-    this.socketServer.to(roomId).emit('user-left', {
+    this.socketServer.to(roomId).emit("user-left", {
       roomId,
       userId,
       userCount: room.users.size,
@@ -259,7 +285,7 @@ export class RoomManager {
           try {
             await this.leaveRoom({ roomId, userId }, { socketClient: socket });
           } catch (error) {
-            console.error('leaveRoomBySocket error', error);
+            console.error("leaveRoomBySocket error", error);
           }
         }
       }
@@ -275,28 +301,34 @@ export class RoomManager {
   @e2eeApiMethod()
   async getRoomUsers(
     { roomId }: { roomId: string },
-    context?: IRoomManagerContext,
+    context?: IRoomManagerContext
   ): Promise<IE2EESocketUserInfo[]> {
     if (!context) {
-      throw new Error('context is required');
+      throw new E2eeError(
+        E2eeErrorCode.CONTEXT_REQUIRED,
+        "context is required"
+      );
     }
-    console.log('getRoomUsers>>>>', roomId);
+    console.log("getRoomUsers>>>>", roomId);
     const room = this.rooms.get(roomId);
     if (!room) {
-      console.log('getRoomUsers>>>> room not found');
+      console.log("getRoomUsers>>>> room not found");
       return [];
     }
     // Validate that the socket is in the room
     const socketValidation = this.isUserInRoom(roomId, context.socketClient.id);
     if (!socketValidation.isInRoom) {
-      throw new Error('Socket must be in the room to set transfer direction');
+      throw new E2eeError(
+        E2eeErrorCode.SOCKET_NOT_IN_ROOM,
+        "Socket must be in the room to set transfer direction"
+      );
     }
 
     const users: IE2EESocketUserInfo[] = sortBy(
       Array.from(room.users.values()),
-      (item) => item.joinedAt.getTime(),
+      (item) => item.joinedAt.getTime()
     );
-    console.log('getRoomUsers>>>> users', users.length);
+    console.log("getRoomUsers>>>> users", users.length);
     return users.map((item) => ({
       ...item,
       socketId: undefined,
@@ -314,20 +346,26 @@ export class RoomManager {
       fromUserId: string;
       toUserId: string;
     },
-    context?: IRoomManagerContext,
+    context?: IRoomManagerContext
   ) {
     if (!context) {
-      throw new Error('context is required');
+      throw new E2eeError(
+        E2eeErrorCode.CONTEXT_REQUIRED,
+        "context is required"
+      );
     }
     const room = this.rooms.get(roomId);
     if (!room) {
-      throw new Error('Room not found');
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
     // Validate that the socket is in the room
     const socketValidation = this.isUserInRoom(roomId, context.socketClient.id);
     if (!socketValidation.isInRoom) {
-      throw new Error('Socket must be in the room to set transfer direction');
+      throw new E2eeError(
+        E2eeErrorCode.SOCKET_NOT_IN_ROOM,
+        "Socket must be in the room to set transfer direction"
+      );
     }
 
     // Validate that both users are in the room
@@ -335,7 +373,10 @@ export class RoomManager {
     const toUserExists = room.users.has(toUserId);
 
     if (!fromUserExists || !toUserExists) {
-      throw new Error('Both fromUser and toUser must be in the room');
+      throw new E2eeError(
+        E2eeErrorCode.USERS_NOT_IN_ROOM,
+        "Both fromUser and toUser must be in the room"
+      );
     }
 
     if (fromUserId === toUserId) {
@@ -358,13 +399,13 @@ export class RoomManager {
       // If we couldn't generate a valid random number after max attempts, use a fallback
       if (this.isRepeatedDigits(randomNumber)) {
         // Fallback: ensure at least one digit is different
-        const digits = randomNumber.split('');
+        const digits = randomNumber.split("");
         digits[1] =
-          digits[1] === '0' ? '1' : (parseInt(digits[1], 10) + 1).toString();
-        randomNumber = digits.join('');
+          digits[1] === "0" ? "1" : (parseInt(digits[1], 10) + 1).toString();
+        randomNumber = digits.join("");
       }
 
-      this.socketServer.to(roomId).emit('start-transfer', {
+      this.socketServer.to(roomId).emit("start-transfer", {
         roomId,
         fromUserId,
         toUserId,
@@ -382,7 +423,7 @@ export class RoomManager {
   private isRepeatedDigits(numberStr: string): boolean {
     if (!numberStr || numberStr.length === 0) return false;
     const firstDigit = numberStr[0];
-    return numberStr.split('').every((digit) => digit === firstDigit);
+    return numberStr.split("").every((digit) => digit === firstDigit);
   }
 
   /**
@@ -393,7 +434,7 @@ export class RoomManager {
    */
   isUserInRoom(
     roomId: string,
-    socketId: string,
+    socketId: string
   ): {
     isInRoom: boolean;
     userId?: string;
@@ -442,7 +483,7 @@ export class RoomManager {
 
     if (cleanedCount > 0) {
       console.log(
-        `[RoomManager] Cleaned ${cleanedCount} expired rooms this time`,
+        `[RoomManager] Cleaned ${cleanedCount} expired rooms this time`
       );
     }
   }
@@ -455,6 +496,6 @@ export class RoomManager {
       clearInterval(this.cleanupInterval);
     }
     this.rooms.clear();
-    console.log('[RoomManager] Room manager destroyed');
+    console.log("[RoomManager] Room manager destroyed");
   }
 }
