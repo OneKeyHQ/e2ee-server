@@ -17,7 +17,7 @@ export interface ISyncAdapters {
 
 export interface IMongodbAdapter {
   // User operations
-  findUserById(userId: string, fields?: Record<string, number>): Promise<any>;
+  findUserById(userId: string, fields?: Record<string, number>): Promise<any | null>;
 
   // Device operations
   getDeviceModel(): any;

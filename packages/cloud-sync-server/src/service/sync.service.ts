@@ -100,6 +100,13 @@ export class PrimeSyncService {
     nonce: number,
     backupRecords: ServerPrimeSyncItem[]
   ) {
+    // Validate inputs
+    if (!userId || typeof userId !== 'string') {
+      throw new Error('Invalid userId');
+    }
+    if (typeof nonce !== 'number' || nonce < 0) {
+      throw new Error('Invalid nonce');
+    }
     if (!backupRecords?.length) {
       return;
     }
@@ -124,6 +131,14 @@ export class PrimeSyncService {
   }) {
     const { type, user, changedRecords, nonce, instanceId, lock, pwdHash } =
       params;
+    
+    // Validate required parameters
+    if (!user?.userId) {
+      throw new Error('Invalid user');
+    }
+    if (!instanceId || typeof instanceId !== 'string') {
+      throw new Error('Invalid instanceId');
+    }
 
     const dbUser = (await this.adapters.mongodbAdapter.findUserById(
       user.userId,
@@ -205,6 +220,17 @@ export class PrimeSyncService {
     };
 
     for (const d of body.localData) {
+      // Validate each record
+      if (!d.key || typeof d.key !== 'string') {
+        throw new Error('Invalid key in localData');
+      }
+      if (!d.dataType || typeof d.dataType !== 'string') {
+        throw new Error('Invalid dataType in localData');
+      }
+      if (typeof d.dataTimestamp !== 'number' || d.dataTimestamp < 0) {
+        throw new Error('Invalid dataTimestamp in localData');
+      }
+      
       const record = {
         key: d.key,
         userId: user.userId,

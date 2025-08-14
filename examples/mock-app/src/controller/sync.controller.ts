@@ -26,8 +26,18 @@ export class SyncController {
     @Query('userId') userId: string,
     @Body() body: PrimeSyncDownloadRequestDTO
   ) {
-    const user: IPrimeUser = { userId, isPrime: true, nonce: 0 };
-    return this.syncService.downloadClientInfo(user, body);
+    try {
+      if (!userId) {
+        throw new Error('userId is required');
+      }
+      const user: IPrimeUser = { userId, isPrime: true, nonce: 0 };
+      return await this.syncService.downloadClientInfo(user, body);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Download failed',
+      };
+    }
   }
 
   @Post('/upload')
@@ -35,8 +45,18 @@ export class SyncController {
     @Query('userId') userId: string,
     @Body() body: PrimeSyncUploadRequestDTO
   ) {
-    const user: IPrimeUser = { userId, isPrime: true, nonce: 0 };
-    return this.syncService.uploadClientInfo(user, body);
+    try {
+      if (!userId) {
+        throw new Error('userId is required');
+      }
+      const user: IPrimeUser = { userId, isPrime: true, nonce: 0 };
+      return await this.syncService.uploadClientInfo(user, body);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Upload failed',
+      };
+    }
   }
 
   @Post('/check')
@@ -44,14 +64,34 @@ export class SyncController {
     @Query('userId') userId: string,
     @Body() body: PrimeSyncCheckRequestDTO
   ) {
-    const user: IPrimeUser = { userId, nonce: 0 };
-    return this.syncService.checkClientData(user, body);
+    try {
+      if (!userId) {
+        throw new Error('userId is required');
+      }
+      const user: IPrimeUser = { userId, nonce: 0 };
+      return await this.syncService.checkClientData(user, body);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Check failed',
+      };
+    }
   }
 
   @Get('/lock')
   async getLockItem(@Query('userId') userId: string) {
-    const user: IPrimeUser = { userId, nonce: 0 };
-    return this.syncService.getLockItem(user);
+    try {
+      if (!userId) {
+        throw new Error('userId is required');
+      }
+      const user: IPrimeUser = { userId, nonce: 0 };
+      return await this.syncService.getLockItem(user);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Get lock failed',
+      };
+    }
   }
 
   @Post('/lock')
@@ -59,8 +99,18 @@ export class SyncController {
     @Query('userId') userId: string,
     @Body() body: PrimeChangeLockRequestDTO
   ) {
-    const user: IPrimeUser = { userId, nonce: 0 };
-    return this.syncService.changeUserLock(user, body);
+    try {
+      if (!userId) {
+        throw new Error('userId is required');
+      }
+      const user: IPrimeUser = { userId, nonce: 0 };
+      return await this.syncService.changeUserLock(user, body);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Change lock failed',
+      };
+    }
   }
 
   @Post('/flush')
@@ -68,7 +118,17 @@ export class SyncController {
     @Query('userId') userId: string,
     @Body() body: PrimeSyncFlushRequestDTO
   ) {
-    const user: IPrimeUser = { userId, nonce: 0 };
-    return this.syncService.flushDeviceData(user, body);
+    try {
+      if (!userId) {
+        throw new Error('userId is required');
+      }
+      const user: IPrimeUser = { userId, nonce: 0 };
+      return await this.syncService.flushDeviceData(user, body);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Flush failed',
+      };
+    }
   }
 }

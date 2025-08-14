@@ -8,23 +8,23 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
   private lockData: Map<string, any> = new Map();
   private historyData: Map<string, any[]> = new Map();
   private userData: Map<string, any> = new Map();
+  
+  // Maximum sizes to prevent memory leaks
+  private readonly MAX_SYNC_DATA_PER_USER = 1000;
+  private readonly MAX_HISTORY_ENTRIES = 100;
+  private readonly MAX_USERS = 10000;
 
   constructor() {
-    this.userData.set('test-user-1', {
-      userId: 'test-user-1',
-      email: 'user1@example.com',
-      isPrime: true,
-      deleted: false,
-    });
-    this.userData.set('test-user-2', {
-      userId: 'test-user-2',
-      email: 'user2@example.com',
-      isPrime: true,
-      deleted: false,
-    });
+    // Initialize with empty data - test data should be added via proper test setup
+    // Avoid hardcoding sensitive data in production code
   }
 
   async findUserById(userId: string, fields?: Record<string, number>): Promise<any> {
+    // Validate userId to prevent injection attacks
+    if (!userId || typeof userId !== 'string') {
+      return null;
+    }
+    
     const user = this.userData.get(userId);
     if (!user || user.deleted) return null;
     
@@ -37,7 +37,7 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
       });
       return result;
     }
-    return user;
+    return { ...user }; // Return a copy to prevent mutation
   }
 
   getDeviceModel(): any {
@@ -53,8 +53,14 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
     condition: any = {},
     fields?: any
   ): Promise<any[]> {
+    // Validate userId
+    if (!userId || typeof userId !== 'string') {
+      return [];
+    }
+    
     const userSyncData = this.syncData.get(userId) || [];
     
+    // Deep clone to prevent mutation
     return userSyncData.filter(item => {
       for (const key in condition) {
         if (condition[key] !== item[key]) {
@@ -62,7 +68,7 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
         }
       }
       return true;
-    });
+    }).map(item => ({ ...item }));
   }
 
   async findSyncDataWithPagination(
@@ -89,7 +95,7 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
     upsertedCount: number;
     modifiedCount: number;
   }> {
-    if (!operations?.length) {
+    if (!Array.isArray(operations) || !operations.length) {
       return { upsertedCount: 0, modifiedCount: 0 };
     }
 
@@ -106,7 +112,6 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
         }
         
         const userSyncData = this.syncData.get(userId) || [];
-        this.syncData.set(userId, userSyncData);
         const existingIndex = userSyncData.findIndex(item => 
           item.key === filter.key && item.dataType === filter.dataType
         );
@@ -115,6 +120,11 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
           userSyncData[existingIndex] = { ...userSyncData[existingIndex], ...update.$set };
           modifiedCount++;
         } else {
+          // Prevent unbounded growth
+          if (userSyncData.length >= this.MAX_SYNC_DATA_PER_USER) {
+            // Remove oldest entry if limit reached
+            userSyncData.shift();
+          }
           userSyncData.push({ ...filter, ...update.$set });
           upsertedCount++;
         }
@@ -143,7 +153,14 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
     }
     
     const history = this.historyData.get(key) || [];
-    this.historyData.set(key, history);
+    
+    // Limit history size to prevent memory leaks
+    if (this.historyData.size > this.MAX_HISTORY_ENTRIES) {
+      // Remove oldest history entries
+      const keysToDelete = Array.from(this.historyData.keys()).slice(0, 10);
+      keysToDelete.forEach(k => this.historyData.delete(k));
+    }
+    
     records.forEach(record => {
       const existingIndex = history.findIndex(h => 
         h.key === record.key && h.dataType === record.dataType
@@ -155,6 +172,8 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
         history.push({ ...record, userId, nonce });
       }
     });
+    
+    this.historyData.set(key, history);
   }
 
   async findLockByUserId(userId: string, fields?: any): Promise<any> {

@@ -1,8 +1,10 @@
 const http = require('http');
 
 const testEndpoints = async () => {
-  const userId = 'test-user-1';
-  const baseUrl = 'http://localhost:7001';
+  // Use environment variables or defaults for test data
+  const userId = process.env.TEST_USER_ID || 'test-user-1';
+  const pwdHash = process.env.TEST_PWD_HASH || 'test-hash-default';
+  const baseUrl = process.env.API_BASE_URL || 'http://localhost:7001';
 
   // Test GET /sync/lock
   console.log('\n📍 Testing GET /sync/lock');
@@ -11,7 +13,7 @@ const testEndpoints = async () => {
   // Test POST /sync/lock
   console.log('\n📍 Testing POST /sync/lock');
   await makeRequest('POST', `/sync/lock?userId=${userId}`, {
-    pwdHash: 'test-hash-123',
+    pwdHash: pwdHash,
     lock: {
       encryptedPassword: 'encrypted-pwd',
       salt: 'salt-123',
@@ -21,7 +23,7 @@ const testEndpoints = async () => {
   // Test POST /sync/check
   console.log('\n📍 Testing POST /sync/check');
   await makeRequest('POST', `/sync/check?userId=${userId}`, {
-    pwdHash: 'test-hash-123',
+    pwdHash: pwdHash,
     localData: [],
     onlyCheckLocalDataType: [],
   });
@@ -29,7 +31,7 @@ const testEndpoints = async () => {
   // Test POST /sync/download
   console.log('\n📍 Testing POST /sync/download');
   await makeRequest('POST', `/sync/download?userId=${userId}`, {
-    pwdHash: 'test-hash-123',
+    pwdHash: pwdHash,
     skip: 0,
     limit: 10,
   });
@@ -37,7 +39,7 @@ const testEndpoints = async () => {
   // Test POST /sync/upload
   console.log('\n📍 Testing POST /sync/upload');
   await makeRequest('POST', `/sync/upload?userId=${userId}`, {
-    pwdHash: 'test-hash-123',
+    pwdHash: pwdHash,
     localData: [
       {
         key: 'test-key-1',
@@ -52,7 +54,7 @@ const testEndpoints = async () => {
   // Test POST /sync/flush
   console.log('\n📍 Testing POST /sync/flush');
   await makeRequest('POST', `/sync/flush?userId=${userId}`, {
-    pwdHash: 'new-hash-456',
+    pwdHash: `${pwdHash}-new`,
     localData: [],
     lock: {
       encryptedPassword: 'new-encrypted-pwd',
