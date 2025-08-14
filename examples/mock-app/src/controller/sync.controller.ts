@@ -35,7 +35,7 @@ export class SyncController {
     } catch (error) {
       return {
         success: false,
-        message: error.message || 'Download failed',
+        message: error instanceof Error ? error.message : 'Download failed',
       };
     }
   }
@@ -54,7 +54,7 @@ export class SyncController {
     } catch (error) {
       return {
         success: false,
-        message: error.message || 'Upload failed',
+        message: error instanceof Error ? error.message : 'Upload failed',
       };
     }
   }
@@ -73,7 +73,7 @@ export class SyncController {
     } catch (error) {
       return {
         success: false,
-        message: error.message || 'Check failed',
+        message: error instanceof Error ? error.message : 'Check failed',
       };
     }
   }
@@ -89,7 +89,7 @@ export class SyncController {
     } catch (error) {
       return {
         success: false,
-        message: error.message || 'Get lock failed',
+        message: error instanceof Error ? error.message : 'Get lock failed',
       };
     }
   }
@@ -108,7 +108,7 @@ export class SyncController {
     } catch (error) {
       return {
         success: false,
-        message: error.message || 'Change lock failed',
+        message: error instanceof Error ? error.message : 'Change lock failed',
       };
     }
   }
@@ -127,7 +127,7 @@ export class SyncController {
     } catch (error) {
       return {
         success: false,
-        message: error.message || 'Flush failed',
+        message: error instanceof Error ? error.message : 'Flush failed',
       };
     }
   }
