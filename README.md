@@ -1,371 +1,330 @@
-# OneKey E2EE Server
+# OneKey Server Infrastructure
 
-End-to-End Encryption server for OneKey applications. Built with Socket.IO to provide secure real-time communication services including room management, user authentication, and encrypted data transmission.
+A monorepo containing OneKey's server infrastructure components, including end-to-end encryption server and cloud synchronization services.
 
-## Features
+## 🏗 Architecture
 
-- 🔐 **End-to-End Encryption**: Secure encrypted data transmission
-- 🏠 **Room Management**: Create and manage chat rooms with multi-user support
-- 🔄 **Real-time Communication**: Bidirectional real-time communication based on Socket.IO
-- ⚙️ **Flexible Configuration**: Environment variable configuration for ports, CORS, etc.
-- 🛡️ **Security Controls**: Built-in CORS protection, message size limits, and other security mechanisms
-- 📊 **Health Monitoring**: Provides `/health` endpoint for service monitoring
-
-## Tech Stack
-
-- **Node.js** (>= 24)
-- **TypeScript**
-- **Express.js** - Web framework
-- **Socket.IO** - Real-time communication
-- **@noble/hashes** - Cryptographic algorithms
-- **Docker** - Containerized deployment
-
-## Project Structure
+This monorepo uses Yarn workspaces to manage multiple packages:
 
 ```
-src/
-├── server.ts                    # Main server entry point
-├── types.ts                     # TypeScript type definitions
-├── roomManager.ts               # Room manager
-├── e2eeServerApi.ts            # E2EE API interface
-├── e2eeServerApiProxy.ts       # API proxy
-├── JsBridgeE2EEServer.ts       # JS Bridge server side
-├── JsBridgeE2EEClient.ts       # JS Bridge client side
-├── decorators/
-│   └── e2eeApiMethod.ts        # API method decorator
-└── utils/
-    ├── cryptoUtils.ts          # Crypto utilities
-    ├── bufferUtils.ts          # Buffer utilities
-    ├── stringUtils.ts          # String utilities
-    ├── hexUtils.ts             # Hex utilities
-    ├── timerUtils.ts           # Timer utilities
-    ├── cacheUtils.ts           # Cache utilities
-    └── RemoteApiProxyBase.ts   # Remote API proxy base class
+e2ee-server/
+├── packages/
+│   ├── transfer-server/      # E2EE real-time communication server
+│   └── cloud-sync-server/    # Cloud synchronization component
+└── examples/
+    └── mock-app/             # Mock application for testing
 ```
 
-## Local Development
+## 📦 Packages
+
+### [@onekeyhq/transfer-server](./packages/transfer-server/)
+**End-to-End Encryption Server** - A high-performance, secure real-time communication server built with Socket.IO and TypeScript.
+
+- Real-time bidirectional communication
+- Room-based message routing
+- End-to-end encryption support
+- WebSocket with Socket.IO
+- Production-ready with health checks
+
+### [@onekeyhq/cloud-sync-server](./packages/cloud-sync-server/)
+**Cloud Sync Component** - A Midway.js-based component for OneKey Prime synchronization functionality.
+
+- Midway.js component architecture
+- MongoDB and Kafka adapter support
+- Dependency injection patterns
+- Extensible sync service implementation
+
+### [@onekeyhq/mock-app](./examples/mock-app/)
+**Mock Application** - Testing and development application for integration testing.
+
+- Midway.js application framework
+- Integration test examples
+- API endpoint testing
+- Development environment setup
+
+## 🚀 Quick Start
 
 ### Prerequisites
 
 - Node.js >= 24
-- Yarn (recommended) or npm
+- Yarn package manager
+- MongoDB (for cloud-sync-server)
+- Kafka (optional, for cloud-sync-server)
 
-### Quick Start
+### Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/OneKeyHQ/e2ee-server
-   cd e2ee-server
-   ```
+```bash
+# Clone the repository
+git clone <repository-url>
+cd e2ee-server
 
-2. **Install dependencies**
-   ```bash
-   yarn install
-   # or
-   npm install
-   ```
+# Install all dependencies
+yarn install
 
-3. **Configure environment variables**
-   ```bash
-   cp env.example .env
-   ```
-   
-   Modify the `.env` file as needed:
-   ```env
-   # Server port (default: 3868)
-   PORT=3868
-   
-   # CORS allowed origins, comma-separated
-   CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:3868
-   
-   # Maximum users per room (default: 2)
-   MAX_USERS_PER_ROOM=2
-   
-   # Room timeout in milliseconds (default: 1 hour)
-   ROOM_TIMEOUT=3600000
-   
-   # Maximum message size in bytes (default: 1MB)
-   MAX_MESSAGE_SIZE=1048576
-   ```
+# Build all packages
+yarn build
+```
 
-4. **Start development server**
-   ```bash
-   yarn dev
-   # or
-   npm run dev
-   ```
+### Development
 
-   The server will start at `http://localhost:3868` with hot reload enabled.
+```bash
+# Start transfer-server in development mode
+yarn dev
 
-5. **Health check**
-   ```bash
-   curl http://localhost:3868/health
-   ```
+# Start cloud-sync-server in watch mode
+yarn dev:sync
 
-### Local Network Access
+# Start mock application
+yarn dev:mock
+```
 
-To access the server from other devices on your local network:
+### Production
 
-1. **Find your local IP address**
-   ```bash
-   # On macOS/Linux
-   ifconfig | grep "inet " | grep -v 127.0.0.1
-   
-   # Or use a simpler command
-   hostname -I
-   
-   # On Windows
-   ipconfig | findstr "IPv4"
-   ```
+```bash
+# Build all packages
+yarn build
 
-2. **Update CORS configuration**
-   
-   Add your local IP to the `.env` file:
-   ```env
-   CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:3868,http://192.168.1.100:3868
-   ```
-   Replace `192.168.1.100` with your actual local IP address.
+# Start transfer-server
+yarn start
 
-3. **Access from other devices**
-   
-   Once the server is running, you can access it from other devices using:
-   - Health check: `http://192.168.1.100:3868/health`
-   - Socket.IO connection: `ws://192.168.1.100:3868`
+# Start mock application
+yarn start:mock
+```
 
-4. **Firewall considerations**
-   
-   Make sure your local firewall allows incoming connections on port 3868:
-   ```bash
-   # On macOS (if using pfctl)
-   sudo pfctl -f /etc/pf.conf
-   
-   # On Ubuntu/Debian
-   sudo ufw allow 3868
-   
-   # On CentOS/RHEL
-   sudo firewall-cmd --permanent --add-port=3868/tcp
-   sudo firewall-cmd --reload
-   ```
+## 📋 Available Scripts
 
-### Development Commands
+### Root Level Commands
 
-- `yarn dev` - Start development server (with hot reload)
-- `yarn build` - Build production version
-- `yarn start` - Start production server
-- `yarn clean` - Clean build files
+| Command | Description |
+|---------|-------------|
+| `yarn install` | Install all dependencies for all packages |
+| `yarn build` | Build all packages |
+| `yarn build:sync` | Build cloud-sync-server only |
+| `yarn build:mock` | Build mock-app only |
+| `yarn dev` | Start transfer-server in development mode |
+| `yarn dev:sync` | Start cloud-sync-server in watch mode |
+| `yarn dev:mock` | Start mock-app in development mode |
+| `yarn start` | Start transfer-server in production |
+| `yarn start:mock` | Start mock-app in production |
+| `yarn test` | Run tests for all packages |
+| `yarn test:sync` | Run tests for cloud-sync-server |
+| `yarn test:mock` | Run tests for mock-app |
+| `yarn lint` | Run ESLint for all packages |
+| `yarn lint:sync` | Run ESLint for cloud-sync-server |
+| `yarn clean` | Clean build artifacts for all packages |
 
-### API Endpoints
+### Package-Specific Commands
 
-- `GET /health` - Health check endpoint
-- Socket.IO connection: `ws://localhost:3868`
+Each package has its own set of scripts. Navigate to the package directory or use yarn workspace commands:
 
-### Socket.IO Events
+```bash
+# Run command for specific package
+yarn workspace @onekeyhq/transfer-server <command>
+yarn workspace @onekeyhq/cloud-sync-server <command>
+yarn workspace @onekeyhq/mock-app <command>
+```
 
-#### Client to Server
-
-- `create-room` - Create new room
-- `join-room` - Join room
-- `send-encrypted-data` - Send encrypted data
-- `leave-room` - Leave room
-- `get-room-status` - Get room status
-- `get-room-list` - Get room list
-
-#### Server to Client
-
-- `room-created` - Room created
-- `room-joined` - Joined room
-- `user-joined` - User joined
-- `user-left` - User left
-- `encrypted-data` - Receive encrypted data
-- `room-error` - Room error
-- `room-status` - Room status update
-
-## Production Deployment
-
-### Docker Deployment (Recommended)
-
-1. **Build Docker image**
-   ```bash
-   docker build -t onekey-e2ee-server .
-   ```
-
-2. **Run container**
-   ```bash
-   docker run -d \
-     --name e2ee-server \
-     -p 3868:3868 \
-     -e PORT=3868 \
-     -e CORS_ORIGINS="https://your-domain.com,https://app.onekey.so" \
-     -e MAX_USERS_PER_ROOM=2 \
-     -e ROOM_TIMEOUT=3600000 \
-     -e MAX_MESSAGE_SIZE=1048576 \
-     onekey-e2ee-server
-   ```
-
-3. **Using Docker Compose**
-   
-   Create `docker-compose.yml`:
-   ```yaml
-   version: '3.8'
-   services:
-     e2ee-server:
-       build: .
-       ports:
-         - "3868:3868"
-       environment:
-         - PORT=3868
-         - CORS_ORIGINS=https://your-domain.com,https://app.onekey.so
-         - MAX_USERS_PER_ROOM=2
-         - ROOM_TIMEOUT=3600000
-         - MAX_MESSAGE_SIZE=1048576
-         - TZ=Asia/Shanghai
-       restart: unless-stopped
-   ```
-   
-   Start the service:
-   ```bash
-   docker-compose up -d
-   ```
-
-### Traditional Deployment
-
-1. **Clone code on server**
-   ```bash
-   git clone https://github.com/OneKeyHQ/e2ee-server
-   cd e2ee-server
-   ```
-
-2. **Install dependencies**
-   ```bash
-   yarn install --production
-   ```
-
-3. **Configure environment variables**
-   ```bash
-   cp env.example .env
-   # Edit .env file with production environment parameters
-   ```
-
-4. **Build project**
-   ```bash
-   yarn build
-   ```
-
-5. **Start service**
-   ```bash
-   yarn start
-   ```
-
-6. **Use PM2 for process management (recommended)**
-   ```bash
-   # Install PM2
-   npm install -g pm2
-   
-   # Start application
-   pm2 start dist/server.js --name "e2ee-server"
-   
-   # Set auto-start on boot
-   pm2 startup
-   pm2 save
-   ```
-
-### Cloud Server Deployment Notes
-
-1. **Firewall Configuration**
-   - Ensure port 3868 (or custom port) is open
-   - Configure security group rules to allow inbound connections
-
-2. **Reverse Proxy Configuration (Nginx)**
-   ```nginx
-   server {
-       listen 80;
-       server_name your-domain.com;
-       
-       location / {
-           proxy_pass http://localhost:3868;
-           proxy_http_version 1.1;
-           proxy_set_header Upgrade $http_upgrade;
-           proxy_set_header Connection "upgrade";
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto $scheme;
-           proxy_cache_bypass $http_upgrade;
-       }
-   }
-   ```
-
-3. **HTTPS Configuration**
-   ```bash
-   # Get free SSL certificate with Let's Encrypt
-   sudo apt install certbot python3-certbot-nginx
-   sudo certbot --nginx -d your-domain.com
-   ```
-
-4. **Monitoring and Logging**
-   ```bash
-   # View application logs
-   pm2 logs e2ee-server
-   
-   # Monitor application status
-   pm2 monit
-   
-   # Restart application
-   pm2 restart e2ee-server
-   ```
-
-### Health Check and Monitoring
-
-- **Health check endpoint**: `GET /health`
-- **Response example**:
-  ```json
-  {
-    "message": "Health check OK: 2024-01-01T00:00:00.000Z"
-  }
-  ```
+## 🔧 Configuration
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | 3868 | Server listening port |
-| `CORS_ORIGINS` | localhost:3000,3001,3868 | CORS allowed origins |
-| `MAX_USERS_PER_ROOM` | 2 | Maximum users per room |
-| `ROOM_TIMEOUT` | 3600000 | Room timeout in milliseconds |
-| `MAX_MESSAGE_SIZE` | 1048576 | Maximum message size in bytes |
+Each package can be configured using environment variables. Create `.env` files in package directories:
 
-## Troubleshooting
+#### transfer-server
+```env
+PORT=3868
+CORS_ORIGINS=http://localhost:3000
+MAX_USERS_PER_ROOM=2
+ROOM_TIMEOUT=3600000
+MAX_MESSAGE_SIZE=10485760
+```
 
-### Common Issues
+#### cloud-sync-server
+Configure through Midway.js configuration files in `src/config/`.
 
-1. **Port already in use**
-   ```bash
-   # Check port usage
-   lsof -i :3868
-   # Or modify PORT in .env configuration
-   ```
+## 🏛 Project Structure
 
-2. **CORS errors**
-   - Check `CORS_ORIGINS` environment variable configuration
-   - Ensure client domain is added to the allowed list
+```
+e2ee-server/
+├── packages/
+│   ├── transfer-server/           # E2EE Server
+│   │   ├── src/
+│   │   │   ├── server.ts         # Main server entry
+│   │   │   ├── roomManager.ts    # Room management
+│   │   │   ├── e2eeServerApi.ts  # API interfaces
+│   │   │   └── utils/            # Utility functions
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   │
+│   └── cloud-sync-server/         # Sync Component
+│       ├── src/
+│       │   ├── configuration.ts   # Midway configuration
+│       │   ├── service/          # Service implementations
+│       │   ├── dto/              # Data transfer objects
+│       │   └── adapter/          # External adapters
+│       ├── package.json
+│       └── tsconfig.json
+│
+├── examples/
+│   └── mock-app/                  # Mock Application
+│       ├── src/
+│       │   ├── configuration.ts
+│       │   ├── controller/
+│       │   └── service/
+│       └── package.json
+│
+├── package.json                   # Root package.json
+├── yarn.lock                      # Yarn lock file
+├── CLAUDE.md                      # AI assistant instructions
+└── README.md                      # This file
+```
 
-3. **Socket.IO connection failure**
-   - Check firewall settings
-   - Confirm WebSocket protocol support
-   - Verify reverse proxy configuration
+## 🧪 Testing
 
-4. **Out of memory**
-   - Adjust `MAX_MESSAGE_SIZE` and `MAX_USERS_PER_ROOM`
-   - Monitor server resource usage
+```bash
+# Run all tests
+yarn test
 
-## Development Contributing
+# Run tests for specific package
+yarn test:sync        # Cloud sync server tests
+yarn test:mock        # Mock app tests
 
-1. Fork the project
-2. Create feature branch: `git checkout -b feature/new-feature`
-3. Commit changes: `git commit -am 'Add new feature'`
-4. Push branch: `git push origin feature/new-feature`
-5. Create Pull Request
+# Run tests with coverage
+yarn workspace @onekeyhq/cloud-sync-server test:cov
 
-## License
+# Run tests in watch mode
+yarn workspace @onekeyhq/cloud-sync-server test:watch
+```
 
-Private project, Copyright © OneKey
+## 🔍 Code Quality
+
+```bash
+# Run linting for all packages
+yarn lint
+
+# Run linting for specific package
+yarn lint:sync
+
+# Auto-fix linting issues
+yarn workspace @onekeyhq/cloud-sync-server lint:fix
+```
+
+## 🐳 Docker Support
+
+### Building Docker Images
+
+```bash
+# Build transfer-server image
+docker build -f packages/transfer-server/Dockerfile -t onekey/transfer-server .
+
+# Build cloud-sync-server image
+docker build -f packages/cloud-sync-server/Dockerfile -t onekey/cloud-sync-server .
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  transfer-server:
+    image: onekey/transfer-server
+    ports:
+      - "3868:3868"
+    environment:
+      - NODE_ENV=production
+      - PORT=3868
+
+  cloud-sync-server:
+    image: onekey/cloud-sync-server
+    ports:
+      - "7001:7001"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - mongodb
+      - kafka
+
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    ports:
+      - "9092:9092"
+```
+
+## 📊 Monitoring
+
+### Health Checks
+
+- Transfer Server: `http://localhost:3868/health`
+- Mock App: `http://localhost:7001/health`
+
+### Server Statistics
+
+- Transfer Server: `http://localhost:3868/stats`
+
+## 🛠 Development Guidelines
+
+### Git Workflow
+
+1. Create feature branch from `main`
+2. Make changes and commit with conventional commits
+3. Run tests and linting
+4. Create pull request
+5. Merge after review
+
+### Commit Convention
+
+```
+feat: Add new feature
+fix: Fix bug
+docs: Update documentation
+style: Format code
+refactor: Refactor code
+test: Add tests
+chore: Update dependencies
+```
+
+### Adding New Packages
+
+1. Create new directory under `packages/`
+2. Initialize package with `package.json`
+3. Add to workspaces in root `package.json`
+4. Run `yarn install` from root
+
+## 🔒 Security
+
+- All sensitive configuration should use environment variables
+- Never commit `.env` files
+- Use HTTPS in production
+- Configure CORS appropriately
+- Implement rate limiting
+- Regular dependency updates
+
+## 📝 License
+
+This project is part of the OneKey ecosystem.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'feat: Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📞 Support
+
+For issues and questions:
+- Open an issue on GitHub
+- Contact the OneKey development team
+
+## 🔗 Related Links
+
+- [OneKey Website](https://onekey.so)
+- [Documentation](./docs/)
+- [API Reference](./docs/api/)
+- [Migration Guide](./docs/migration.md)

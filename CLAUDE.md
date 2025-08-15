@@ -91,7 +91,7 @@ A Midway.js-based component for OneKey Prime synchronization functionality.
 - ESLint configuration with TypeScript plugin
 - Prettier integration for code formatting
 - Each package has its own `tsconfig.json` and `.eslintrc.js`
-- Node.js version requirement: >= 24 (transfer-server: >= 20)
+- Node.js version requirement: >= 24
 
 ## Important Implementation Notes
 
