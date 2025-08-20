@@ -18,7 +18,6 @@
     "@midwayjs/koa": "^3.20.0",
     "@midwayjs/logger": "^3.4.2",
     "@midwayjs/validate": "^3.20.12",
-    "@onekeyhq/cloud-sync-server": "workspace:*",
     "mongoose": "^8.17.1"
   },
   "devDependencies": {
