@@ -19,7 +19,7 @@
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "fast-json-stable-stringify": "^2.1.0",
-    "lodash": "^4.17.21",
+    "lodash": "^4.17.23",
     "lru-cache": "^10.0.0",
     "memoizee": "^0.4.15",
     "nanoid": "^5.0.4",
