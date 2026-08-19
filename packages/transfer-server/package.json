@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "dev": "nodemon src/server.ts",
     "clean": "rimraf dist",
+    "test": "yarn build && ts-node --project test/tsconfig.json test/smoke.ts",
     "postinstall": "echo 'e2ee-server dependencies installed'"
   },
   "dependencies": {
