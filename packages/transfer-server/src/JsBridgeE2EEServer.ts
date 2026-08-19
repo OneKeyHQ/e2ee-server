@@ -15,7 +15,11 @@ import type { Socket } from 'socket.io';
 const logger = createModuleLogger('jsBridge');
 
 const RATE_LIMIT_INTERVAL_MS = 3000;
-const lastRequestTime: Map<string, number> = new Map();
+
+// Upper bound on distinct methods tracked per connection. `method` comes from
+// the client, so without a cap a single socket could grow this map forever.
+// Well above the number of methods a real client calls.
+const RATE_LIMIT_MAX_TRACKED_METHODS = 64;
 
 const CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE = -387_155_488;
 
@@ -78,6 +82,18 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
   }
 
   private socketClient: Socket;
+
+  /**
+   * Rate limit state, scoped to this connection rather than kept in a
+   * module-level map that lived for the lifetime of the process.
+   *
+   * Cleared explicitly on disconnect rather than left to GC: JsBridgeBase
+   * instances are currently retained for the lifetime of the process, so
+   * anything hanging off them has to be released by hand. For the same reason
+   * this is a plain Map - a structure that preallocates would turn into a
+   * fixed cost per connection.
+   */
+  private rateLimitState = new Map<string, number>();
 
   override sendAsString = false;
 
@@ -168,18 +184,47 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
       return false;
     }
 
-    const rateLimitKey = `${this.socketClient.id}:${eventName}:${method}`;
+    // no socket id in the key: the map already belongs to this connection
+    const rateLimitKey = `${eventName}:${method}`;
 
     const now = Date.now();
-    const lastTime = lastRequestTime.get(rateLimitKey) || 0;
+    const lastTime = this.rateLimitState.get(rateLimitKey);
 
-    if (now - lastTime < RATE_LIMIT_INTERVAL_MS) {
+    if (lastTime !== undefined && now - lastTime < RATE_LIMIT_INTERVAL_MS) {
       sendErrorResponse();
       return true;
     }
 
-    lastRequestTime.set(rateLimitKey, now);
+    if (this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS) {
+      this.pruneRateLimitState(now);
+    }
+
+    this.rateLimitState.set(rateLimitKey, now);
     return false;
+  }
+
+  /**
+   * Drop entries whose window has already passed - they can no longer rate
+   * limit anything. This is what keeps a client sending an endless stream of
+   * distinct method names from growing the map without bound.
+   */
+  private pruneRateLimitState(now: number): void {
+    for (const [key, time] of this.rateLimitState) {
+      if (now - time >= RATE_LIMIT_INTERVAL_MS) {
+        this.rateLimitState.delete(key);
+      }
+    }
+
+    // Every entry is still live, so the connection is flooding distinct
+    // methods. Dropping the state costs one skipped check; an unbounded map
+    // costs the process.
+    if (this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS) {
+      this.rateLimitState.clear();
+      logger.warn(
+        { socketId: this.socketClient.id },
+        'jsBridge.rateLimitStateFlushed',
+      );
+    }
   }
 
   private buildRateLimitResponder(payload: IJsBridgeMessagePayload) {
@@ -202,6 +247,12 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
   }
 
   setup() {
+    // JsBridgeBase instances outlive their socket, so per-connection state is
+    // released explicitly rather than left for GC to reclaim
+    this.socketClient.on('disconnect', () => {
+      this.rateLimitState.clear();
+    });
+
     this.socketClient.on(
       'e2ee-request',
       this.safeHandler<unknown>('e2ee-request', (raw) => {
