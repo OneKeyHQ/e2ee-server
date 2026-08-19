@@ -5,11 +5,14 @@ import { sortBy } from "lodash";
 import { e2eeApiMethod } from "./decorators/e2eeApiMethod";
 import { E2eeError, E2eeErrorCode } from "./errors";
 import cryptoUtils from "./utils/cryptoUtils";
+import { createModuleLogger } from "./utils/logger";
 import stringUtils from "./utils/stringUtils";
 import timerUtils from "./utils/timerUtils";
 
 import type { Socket, Server as SocketIOServer } from "socket.io";
 import type { IE2EESocketUserInfo, IRoom, IRoomConfig } from "./types";
+
+const logger = createModuleLogger("roomManager");
 
 export type IRoomManagerContext = {
   socketClient: Socket;
@@ -55,9 +58,7 @@ export class RoomManager {
 
       // If room ID already exists, wait 1 second then regenerate
       if (this.rooms.has(roomId)) {
-        console.log(
-          `[RoomManager] Room ID ${roomId} already exists, waiting 1 second to regenerate`
-        );
+        logger.warn({ roomId }, "room.idCollision");
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } while (this.rooms.has(roomId));
@@ -75,7 +76,7 @@ export class RoomManager {
 
     this.rooms.set(roomId, room);
 
-    console.log(`[RoomManager] Room created: ${roomId}`);
+    logger.info({ roomId }, "room.created");
     return { roomId, encryptionKey };
   }
 
@@ -181,9 +182,7 @@ export class RoomManager {
     room.users.set(userId, userInfo);
     room.lastActivity = new Date();
 
-    console.log(
-      `[RoomManager] User ${userId} joined room ${roomId}, current user count: ${room.users.size}`
-    );
+    logger.info({ userId, roomId, userCount: room.users.size }, "room.joined");
 
     await context?.socketClient.join(roomId);
 
@@ -246,9 +245,7 @@ export class RoomManager {
 
     room.lastActivity = new Date();
 
-    console.log(
-      `[RoomManager] User ${userId} left room ${roomId}, remaining users: ${room.users.size}`
-    );
+    logger.info({ userId, roomId, userCount: room.users.size }, "room.left");
 
     await context.socketClient.leave(roomId);
 
@@ -261,7 +258,7 @@ export class RoomManager {
     // If room is empty, delete room
     if (room.users.size === 0) {
       this.rooms.delete(roomId);
-      console.log(`[RoomManager] Empty room deleted: ${roomId}`);
+      logger.info({ roomId }, "room.deletedEmpty");
       return { success: true, userCount: 0, roomDestroyed: true };
     }
 
@@ -285,7 +282,10 @@ export class RoomManager {
           try {
             await this.leaveRoom({ roomId, userId }, { socketClient: socket });
           } catch (error) {
-            console.error("leaveRoomBySocket error", error);
+            logger.error(
+              { err: error, roomId, userId },
+              "room.leaveBySocketFailed"
+            );
           }
         }
       }
@@ -309,10 +309,10 @@ export class RoomManager {
         "context is required"
       );
     }
-    console.log("getRoomUsers>>>>", roomId);
+    logger.debug({ roomId }, "room.getRoomUsers");
     const room = this.rooms.get(roomId);
     if (!room) {
-      console.log("getRoomUsers>>>> room not found");
+      logger.debug({ roomId }, "room.getRoomUsersNotFound");
       return [];
     }
     // Validate that the socket is in the room
@@ -328,7 +328,7 @@ export class RoomManager {
       Array.from(room.users.values()),
       (item) => item.joinedAt.getTime()
     );
-    console.log("getRoomUsers>>>> users", users.length);
+    logger.debug({ roomId, userCount: users.length }, "room.getRoomUsersResult");
     return users.map((item) => ({
       ...item,
       socketId: undefined,
@@ -477,14 +477,12 @@ export class RoomManager {
       if (timeSinceActivity > this.config.roomTimeout) {
         this.rooms.delete(roomId);
         cleanedCount += 1;
-        console.log(`[RoomManager] Expired room cleaned: ${roomId}`);
+        logger.info({ roomId }, "room.expiredCleaned");
       }
     }
 
     if (cleanedCount > 0) {
-      console.log(
-        `[RoomManager] Cleaned ${cleanedCount} expired rooms this time`
-      );
+      logger.info({ cleanedCount }, "room.cleanupFinished");
     }
   }
 
@@ -496,6 +494,6 @@ export class RoomManager {
       clearInterval(this.cleanupInterval);
     }
     this.rooms.clear();
-    console.log("[RoomManager] Room manager destroyed");
+    logger.info("roomManager.destroyed");
   }
 }

@@ -7,6 +7,7 @@ import { Server as SocketIOServer } from 'socket.io';
 
 import { e2eeServerApiSetup } from './e2eeServerApi';
 import { RoomManager } from './roomManager';
+import { logger } from './utils/logger';
 
 import type {
   IClientToServerEvents,
@@ -36,6 +37,8 @@ class E2EEServer {
   private corsOptions: cors.CorsOptions;
 
   constructor() {
+    this.setupProcessGuards();
+
     this.config = {
       port: parseInt(process.env.PORT || '3868', 10),
       corsOrigins: process.env.CORS_ORIGINS?.split(',') || [
@@ -117,8 +120,9 @@ class E2EEServer {
         .json({ message: `Health check OK: ${new Date().toISOString()}` });
     });
 
+    // debug level on purpose: the k8s health probe polls /health continuously
     this.app.use((req, _res, next) => {
-      console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+      logger.debug({ method: req.method, path: req.path }, 'http.request');
       next();
     });
   }
@@ -129,7 +133,52 @@ class E2EEServer {
     });
   }
 
+  /**
+   * Last line of defence against a single bad request killing the whole server.
+   *
+   * Node's default `--unhandled-rejections=throw` turns any unhandled rejection
+   * into a fatal error, and an uncaught exception exits the process outright.
+   * This server keeps all room state in memory and runs as a single replica, so
+   * one malformed packet on one connection would otherwise drop every active
+   * transfer and return 503 until the pod restarts.
+   *
+   * Handling both events deliberately keeps the process alive: the individual
+   * request is already lost, but the other sessions are not. Anything logged
+   * here is a real defect - the handler that let the error escape should be
+   * fixed rather than left to this net.
+   */
+  private setupProcessGuards(): void {
+    process.on('unhandledRejection', (reason) => {
+      try {
+        logger.fatal({ err: reason }, 'process.unhandledRejection');
+      } catch {
+        // never let the guard itself throw
+      }
+    });
+
+    process.on('uncaughtException', (error, origin) => {
+      try {
+        logger.fatal({ err: error, origin }, 'process.uncaughtException');
+      } catch {
+        // never let the guard itself throw
+      }
+    });
+  }
+
   private setupSocketEvents(): void {
+    // handshake/transport failures never reach a connection handler; without
+    // this they are invisible and show up only as gateway 5xx
+    this.socketServer.engine.on('connection_error', (error) => {
+      logger.warn(
+        {
+          code: error.code,
+          message: error.message,
+          context: error.context,
+        },
+        'socket.connectionError',
+      );
+    });
+
     this.socketServer.on('connection', (socketClient) => {
       e2eeServerApiSetup({
         socketClient,
@@ -139,8 +188,9 @@ class E2EEServer {
       const instanceId =
         (socketClient.handshake.auth.instanceId as string) || '';
 
-      console.log(
-        `[Socket] User connected: ${socketClient.id}, instanceId: ${instanceId}`,
+      logger.info(
+        { socketId: socketClient.id, instanceId },
+        'socket.connected',
       );
 
       // TODO remove room when user disconnect
@@ -148,17 +198,20 @@ class E2EEServer {
 
       // Handle disconnection
       socketClient.on('disconnect', async (reason) => {
-        console.log(
-          `[Socket] User disconnected: ${socketClient.id}, instanceId: ${
-            socketClient.data.instanceId || ''
-          }, reason: ${reason}`,
+        logger.info(
+          {
+            socketId: socketClient.id,
+            instanceId: socketClient.data.instanceId || '',
+            reason,
+          },
+          'socket.disconnected',
         );
         await this.handleUserDisconnect(socketClient);
       });
 
       // Error handling
       socketClient.on('error', (error) => {
-        console.error(`[Socket] Socket error ${socketClient.id}:`, error);
+        logger.error({ err: error, socketId: socketClient.id }, 'socket.error');
       });
     });
   }
@@ -187,10 +240,10 @@ class E2EEServer {
           userId: undefined,
         };
 
-        console.log(`[Socket] User ${userId} left room ${targetRoomId}`);
+        logger.info({ userId, roomId: targetRoomId }, 'room.userLeft');
       }
     } catch (error) {
-      console.error('[Socket] Failed to handle user leaving room:', error);
+      logger.error({ err: error }, 'room.leaveFailed');
     }
   }
 
@@ -199,12 +252,13 @@ class E2EEServer {
       const result = await this.roomManager.leaveRoomBySocket(socket);
       await this.handleUserLeaveRoom(socket);
       if (result.roomId && result.userId) {
-        console.log(
-          `[Socket] Disconnected user ${result.userId} removed from room ${result.roomId}`,
+        logger.info(
+          { userId: result.userId, roomId: result.roomId },
+          'room.userRemovedOnDisconnect',
         );
       }
     } catch (error) {
-      console.error('[Socket] Failed to handle user disconnection:', error);
+      logger.error({ err: error }, 'socket.disconnectHandlingFailed');
     }
     // remove all event listeners
     socket.removeAllListeners();
@@ -271,6 +325,7 @@ class E2EEServer {
         return `${lanTitleLine}\n${lanEndpointLine}\n${lanHealthLine}`;
       }).join('\n');
       
+      // human-readable banner; the structured startup event is logged below
       console.log(`
 ╔══════════════════════════════════════════════════════════╗
 ║                    E2EE Server                           ║
@@ -285,6 +340,16 @@ ${localhostEndpointLine}
 ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
 ╚══════════════════════════════════════════════════════════╝
       `);
+
+      logger.info(
+        {
+          port: this.config.port,
+          maxUsers: this.config.roomConfig.maxUsers,
+          roomTimeout: this.config.roomConfig.roomTimeout,
+          maxMessageSize: this.config.roomConfig.maxMessageSize,
+        },
+        'server.started',
+      );
     });
 
     // Graceful shutdown
@@ -293,9 +358,7 @@ ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
   }
 
   private gracefulShutdown(signal: string): void {
-    console.log(
-      `\n[Server] Received ${signal} signal, starting graceful shutdown...`,
-    );
+    logger.info({ signal }, 'server.shutdownStarted');
 
     // Close room manager
     if (this.roomManager) {
@@ -305,21 +368,21 @@ ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
     // Close Socket.IO server
     if (this.socketServer) {
       void this.socketServer.close(() => {
-        console.log('[Server] Socket.IO server closed');
+        logger.info('server.socketIoClosed');
       });
     }
 
     // Close HTTP server
     if (this.httpServer) {
       this.httpServer.close(() => {
-        console.log('[Server] HTTP server closed');
+        logger.info('server.httpClosed');
         process.exit(0);
       });
     }
 
     // Force exit timeout
     setTimeout(() => {
-      console.log('[Server] Force exit');
+      logger.warn('server.forceExit');
       process.exit(1);
     }, 10_000);
   }
