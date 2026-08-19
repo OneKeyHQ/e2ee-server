@@ -9,8 +9,24 @@ import { buildCallRemoteApiMethod } from './utils/RemoteApiProxyBase';
 
 import type { IRoomManagerContext, RoomManager } from './roomManager';
 import type { IE2EEServerApiKeys } from './types';
-import type { IJsonRpcRequest } from '@onekeyfe/cross-inpage-provider-types';
+import type {
+  IJsBridgeConfig,
+  IJsonRpcRequest,
+} from '@onekeyfe/cross-inpage-provider-types';
 import type { Socket } from 'socket.io';
+
+/**
+ * The bundled debug logger registers a `once('debugReady')` listener on a
+ * process-global emitter for every bridge message. Server side that event never
+ * fires, so the listeners pile up for the lifetime of the process - enough to
+ * trip MaxListenersExceededWarning at 10k messages.
+ *
+ * Nothing consumes that output here; structured logs go through utils/logger.
+ * Handing the bridge a no-op keeps the listener list empty.
+ */
+const noopDebugLogger = {
+  jsBridge: () => undefined,
+} as unknown as IJsBridgeConfig['debugLogger'];
 
 function createBridgeE2EEServer({
   socketClient,
@@ -41,6 +57,7 @@ function createBridgeE2EEServer({
 
   return new JsBridgeE2EEServer(
     {
+      debugLogger: noopDebugLogger,
       receiveHandler: async (payload) => {
         const req: IJsonRpcRequest = payload.data as IJsonRpcRequest;
 

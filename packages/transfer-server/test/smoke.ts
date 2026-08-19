@@ -1,0 +1,542 @@
+/**
+ * End-to-end smoke test.
+ *
+ * Boots the built server as a real process, drives it with two real Socket.IO
+ * clients, and asserts that malformed traffic cannot take it down.
+ *
+ * The regression it guards: `JsBridgeBase.receive()` throws synchronously on a
+ * payload it does not recognise. When that ran inside an `async` Socket.IO
+ * listener the throw escaped as an unhandled rejection, which Node treats as
+ * fatal - one bad packet from one client killed every other session on the
+ * process. Anything that reintroduces that shape (an `async` listener, a
+ * missing validation, a handler that throws) fails here.
+ *
+ * Run with `yarn test` from packages/transfer-server.
+ */
+import { spawn } from 'child_process';
+import { get } from 'http';
+import { join } from 'path';
+
+import { io } from 'socket.io-client';
+
+import type { ChildProcess } from 'child_process';
+import type { Socket } from 'socket.io-client';
+
+const PORT = Number(process.env.SMOKE_PORT || 38_680);
+const BASE_URL = `http://localhost:${PORT}`;
+const SERVER_ENTRY = join(__dirname, '..', 'dist', 'server.js');
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let failures = 0;
+
+function check(ok: boolean, label: string, detail = ''): void {
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` - ${detail}` : ''}`);
+  if (!ok) {
+    failures += 1;
+  }
+}
+
+function health(): Promise<number | string> {
+  return new Promise((resolve) => {
+    const req = get(`${BASE_URL}/health`, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('error', (err: NodeJS.ErrnoException) => resolve(`ERR ${err.code ?? 'unknown'}`));
+    req.setTimeout(3000, () => {
+      req.destroy();
+      resolve('TIMEOUT');
+    });
+  });
+}
+
+async function startServer(): Promise<ChildProcess> {
+  const server = spawn(process.execPath, [SERVER_ENTRY], {
+    env: { ...process.env, PORT: String(PORT), LOG_LEVEL: 'warn' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  const output: string[] = [];
+  server.stdout?.on('data', (chunk: Buffer) => output.push(chunk.toString()));
+  server.stderr?.on('data', (chunk: Buffer) => output.push(chunk.toString()));
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (server.exitCode !== null) {
+      throw new Error(`server exited during startup:\n${output.join('')}`);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    if ((await health()) === 200) {
+      return server;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await wait(250);
+  }
+
+  server.kill('SIGKILL');
+  throw new Error(`server did not become healthy on ${BASE_URL}:\n${output.join('')}`);
+}
+
+type IClient = {
+  name: string;
+  socket: Socket;
+  call: (module: string, method: string, params: unknown[]) => Promise<any>;
+  callRaw: (module: string, method: string, params: unknown[]) => Promise<any>;
+  c2cRequests: any[];
+  c2cResponses: any[];
+  ready: Promise<void>;
+};
+
+function makeClient(name: string): IClient {
+  const socket = io(BASE_URL, {
+    transports: ['websocket'],
+    auth: { instanceId: name },
+    reconnection: false,
+  });
+
+  let seq = 0;
+  const pending = new Map<number, (payload: any) => void>();
+  const c2cRequests: any[] = [];
+  const c2cResponses: any[] = [];
+
+  socket.on('e2ee-response', (payload: any) => {
+    const resolver = pending.get(payload?.id as number);
+    if (resolver) {
+      pending.delete(payload.id as number);
+      resolver(payload);
+    }
+  });
+  socket.on('e2ee-c2c-request', (payload: any) => c2cRequests.push(payload));
+  socket.on('e2ee-c2c-response', (payload: any) => c2cResponses.push(payload));
+
+  const callRaw = (module: string, method: string, params: unknown[]) => {
+    seq += 1;
+    const id = seq;
+    return new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`timeout waiting for ${method}`));
+      }, 9000);
+      pending.set(id, (payload) => {
+        clearTimeout(timer);
+        resolve(payload);
+      });
+      socket.emit('e2ee-request', {
+        id,
+        type: 'REQUEST',
+        data: { module, method, params },
+      });
+    });
+  };
+
+  const call = async (module: string, method: string, params: unknown[]) => {
+    const payload = await callRaw(module, method, params);
+    if (payload.error) {
+      throw new Error(`${method} -> ${payload.error.message as string}`);
+    }
+    return payload.data;
+  };
+
+  return {
+    name,
+    socket,
+    call,
+    callRaw,
+    c2cRequests,
+    c2cResponses,
+    ready: new Promise<void>((resolve, reject) => {
+      socket.on('connect', () => resolve());
+      socket.on('connect_error', (err) => reject(new Error(`${name}: ${err.message}`)));
+    }),
+  };
+}
+
+/**
+ * Send one message across a client-to-client channel and confirm the peer
+ * received that exact payload. Each message carries a unique token so a stale
+ * or duplicated delivery cannot be mistaken for a fresh one.
+ *
+ * Every call uses a distinct method name: `e2ee-c2c-request` is rate limited
+ * per method, so reusing one would trip the limiter instead of testing delivery.
+ */
+async function deliver(
+  from: IClient,
+  to: IClient,
+  channel: 'request' | 'response',
+  roomId: string,
+  token: string,
+): Promise<boolean> {
+  const inbox = channel === 'request' ? to.c2cRequests : to.c2cResponses;
+  const before = inbox.length;
+
+  if (channel === 'request') {
+    from.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now(),
+        type: 'REQUEST',
+        data: { module: 'peer', method: `peerMessage_${token}`, params: [token] },
+      },
+      roomId,
+    });
+  } else {
+    from.socket.emit('e2ee-c2c-response', {
+      payload: { id: Date.now(), type: 'RESPONSE', data: { result: token } },
+      roomId,
+    });
+  }
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (inbox.length > before) {
+      const received = inbox[inbox.length - 1];
+      const carried =
+        channel === 'request'
+          ? (received?.data?.params as string[])?.[0]
+          : (received?.data?.result as string);
+      return carried === token;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await wait(100);
+  }
+  return false;
+}
+
+async function waitFor<T>(read: () => T | undefined, timeoutMs = 3000): Promise<T | undefined> {
+  for (let attempt = 0; attempt < timeoutMs / 100; attempt += 1) {
+    const value = read();
+    if (value !== undefined) {
+      return value;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await wait(100);
+  }
+  return undefined;
+}
+
+/**
+ * A real conversation, not two independent one-way deliveries: the initiator
+ * sends a request, the peer actually receives it and answers on the response
+ * channel, and the answer has to arrive back carrying the same correlation id.
+ *
+ * This is the shape a real client uses, and it is the only assertion that
+ * covers the causal chain - peer received, peer replied, initiator got the
+ * reply - rather than just "packets move in both directions".
+ */
+async function roundTrip(
+  initiator: IClient,
+  peer: IClient,
+  roomId: string,
+  token: string,
+): Promise<boolean> {
+  const peerSeen = peer.c2cRequests.length;
+  const initiatorSeen = initiator.c2cResponses.length;
+  const requestId = Date.now() % 1_000_000;
+
+  initiator.socket.emit('e2ee-c2c-request', {
+    payload: {
+      id: requestId,
+      type: 'REQUEST',
+      data: { module: 'peer', method: `roundTrip_${token}`, params: [token] },
+    },
+    roomId,
+  });
+
+  const request = await waitFor(() =>
+    peer.c2cRequests.length > peerSeen ? peer.c2cRequests[peer.c2cRequests.length - 1] : undefined,
+  );
+  if (!request || request.id !== requestId || (request.data?.params as string[])?.[0] !== token) {
+    return false;
+  }
+
+  // the peer answers the request it just received
+  peer.socket.emit('e2ee-c2c-response', {
+    payload: { id: request.id, type: 'RESPONSE', data: { result: `${token}-ack` } },
+    roomId,
+  });
+
+  const response = await waitFor(() =>
+    initiator.c2cResponses.length > initiatorSeen
+      ? initiator.c2cResponses[initiator.c2cResponses.length - 1]
+      : undefined,
+  );
+  return response?.id === requestId && response?.data?.result === `${token}-ack`;
+}
+
+/** Both directions, both channels, plus a full request/answer conversation each way. */
+async function checkBidirectional(
+  clientA: IClient,
+  clientB: IClient,
+  roomId: string,
+  stage: string,
+): Promise<void> {
+  const results = [
+    ['A -> B request', await deliver(clientA, clientB, 'request', roomId, `${stage}-ab-req`)],
+    ['B -> A request', await deliver(clientB, clientA, 'request', roomId, `${stage}-ba-req`)],
+    ['A -> B response', await deliver(clientA, clientB, 'response', roomId, `${stage}-ab-res`)],
+    ['B -> A response', await deliver(clientB, clientA, 'response', roomId, `${stage}-ba-res`)],
+    ['A asks, B answers, A hears back', await roundTrip(clientA, clientB, roomId, `${stage}-aba`)],
+    ['B asks, A answers, B hears back', await roundTrip(clientB, clientA, roomId, `${stage}-bab`)],
+  ] as Array<[string, boolean]>;
+
+  for (const [direction, ok] of results) {
+    check(ok, `${stage}: ${direction}`, ok ? 'payload intact' : 'not delivered');
+  }
+}
+
+const appInfo = (device: string) => ({
+  appPlatform: 'smoke-test',
+  appPlatformName: 'smoke-test',
+  appVersion: '1.0.0',
+  appBuildNumber: '1',
+  appDeviceName: device,
+});
+
+/**
+ * Every malformed shape, aimed at all four listeners. The first entry is the
+ * exact packet that took production down.
+ */
+/** Matches RATE_LIMIT_MAX_TRACKED_METHODS in the server. */
+const RATE_LIMIT_FLOOD_SIZE = 64;
+
+const MALFORMED_PACKETS: Array<[string, unknown]> = [
+  ['e2ee-request', { data: { module: 'roomManager', method: 'createRoom' } }],
+  ['e2ee-request', undefined],
+  ['e2ee-request', null],
+  ['e2ee-request', 'a string'],
+  ['e2ee-request', [1, 2, 3]],
+  ['e2ee-request', { type: 'NOT_A_TYPE', data: { method: 'x' } }],
+  ['e2ee-request', { type: 'REQUEST', data: {} }],
+  ['e2ee-request', { type: 'REQUEST', data: { method: 42 } }],
+  ['e2ee-request', { type: 'REQUEST', data: null }],
+  ['e2ee-request', { type: 'RESPONSE' }],
+  ['e2ee-c2c-request', undefined],
+  ['e2ee-c2c-request', null],
+  ['e2ee-c2c-request', {}],
+  ['e2ee-c2c-request', { payload: { type: 'REQUEST', data: { method: 'x' } } }],
+  ['e2ee-c2c-request', { payload: { type: 'REQUEST', data: { method: 'x' } }, roomId: 42 }],
+  ['e2ee-c2c-request', { payload: null, roomId: 'ABCDE-12345' }],
+  ['e2ee-c2c-response', undefined],
+  ['e2ee-c2c-response', null],
+  ['e2ee-c2c-response', {}],
+  ['e2ee-c2c-response', { payload: { type: 'BOGUS' }, roomId: 'ABCDE-12345' }],
+  ['e2ee-c2c-response', { payload: 'nope', roomId: null }],
+];
+
+/**
+ * Payloads that pass validation but are hostile in content - they probe what
+ * happens *after* the guard: relay of huge/awkward structures, rate-limit and
+ * memoize cache keys under client control, prototype-pollution shaped keys.
+ * None of these should perturb the process.
+ */
+function deepObject(depth: number): unknown {
+  let node: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < depth; i += 1) {
+    node = { n: node };
+  }
+  return node;
+}
+
+function fireHostileValidPayloads(clientA: IClient, roomId: string): void {
+  // 64 oversized method names - each becomes a rate-limit map key
+  for (let i = 0; i < 64; i += 1) {
+    clientA.socket.emit('e2ee-request', {
+      id: 6000 + i,
+      type: 'REQUEST',
+      data: { module: 'roomManager', method: `${i}_${'m'.repeat(50 * 1024)}` },
+    });
+  }
+  // many distinct module names - memoize cache keys
+  for (let i = 0; i < 2000; i += 1) {
+    clientA.socket.emit('e2ee-request', {
+      id: 7000 + i,
+      type: 'REQUEST',
+      data: { module: `mod_${i}`, method: 'createRoom' },
+    });
+  }
+  // prototype-pollution shaped params
+  clientA.socket.emit('e2ee-request', {
+    id: 8001,
+    type: 'REQUEST',
+    data: {
+      module: 'roomManager',
+      method: 'joinRoom',
+      params: [{ __proto__: { polluted: true }, constructor: { prototype: { x: 1 } }, roomId }],
+    },
+  });
+  // huge params array, and an awkwardly nested but legal object relayed to the peer
+  clientA.socket.emit('e2ee-request', {
+    id: 8002,
+    type: 'REQUEST',
+    data: { module: 'roomManager', method: 'joinRoom', params: new Array(100_000).fill('x') },
+  });
+  clientA.socket.emit('e2ee-c2c-request', {
+    payload: { id: 8003, type: 'REQUEST', data: { module: 'peer', method: 'deep', params: [deepObject(500)] } },
+    roomId,
+  });
+  // hostile field types on the response path
+  clientA.socket.emit('e2ee-request', {
+    id: 8004,
+    type: 'REQUEST',
+    scope: deepObject(200) as never,
+    data: { module: 'roomManager', method: 'nope' },
+  });
+}
+
+async function main(): Promise<void> {
+  console.log(`\nstarting server on port ${PORT}`);
+  const server = await startServer();
+
+  const clientA = makeClient('smoke-client-A');
+  const clientB = makeClient('smoke-client-B');
+
+  try {
+    await Promise.all([clientA.ready, clientB.ready]);
+    console.log(`clients connected: A=${clientA.socket.id ?? ''} B=${clientB.socket.id ?? ''}\n`);
+
+    // --- a real session, so the assertions afterwards mean something ---
+    const room = await clientA.call('roomManager', 'createRoom', []);
+    await clientA.call('roomManager', 'joinRoomAfterCreate', [
+      { roomId: room.roomId, ...appInfo('A') },
+    ]);
+    await clientB.call('roomManager', 'joinRoom', [{ roomId: room.roomId, ...appInfo('B') }]);
+
+    const usersBefore = await clientA.call('roomManager', 'getRoomUsers', [
+      { roomId: room.roomId },
+    ]);
+    check(usersBefore.length === 2, 'session established', `${usersBefore.length} users in room`);
+
+    // --- baseline: peers can talk both ways before anything goes wrong ---
+    await checkBidirectional(clientA, clientB, room.roomId, 'before');
+
+    // --- both clients attack every listener ---
+    console.log(
+      `\nfiring ${MALFORMED_PACKETS.length} malformed packets from each client (${
+        MALFORMED_PACKETS.length * 2
+      } total)\n`,
+    );
+    for (const [event, payload] of MALFORMED_PACKETS) {
+      clientA.socket.emit(event, payload);
+      clientB.socket.emit(event, payload);
+    }
+    await wait(2000);
+
+    // --- did the process survive? ---
+    const status = await health();
+    const serverAlive = status === 200;
+    check(serverAlive, 'server process alive', `/health = ${String(status)}`);
+
+    // Checked whether or not the server is up: when it dies it takes every
+    // connection with it, and recording that is the point of the comparison
+    // against the pre-fix build. Give the transport a moment to notice first.
+    if (!serverAlive) {
+      await wait(1500);
+    }
+    check(clientA.socket.connected, 'client A still connected');
+    check(clientB.socket.connected, 'client B still connected');
+
+    // everything below needs a live server to say anything at all
+    if (!serverAlive) {
+      return;
+    }
+
+    // --- and the session has to have survived, not just the process ---
+    const usersAfter = await clientA.call('roomManager', 'getRoomUsers', [
+      { roomId: room.roomId },
+    ]);
+    check(usersAfter.length === 2, 'room state intact', `${usersAfter.length} users still in room`);
+
+    // --- the point of the whole test: the two peers can still talk, both
+    //     ways, on both channels, with payloads arriving intact ---
+    await checkBidirectional(clientA, clientB, room.roomId, 'after');
+
+    // --- and it holds under a second round of abuse, so surviving once was
+    //     not luck ---
+    for (const [event, payload] of MALFORMED_PACKETS) {
+      clientB.socket.emit(event, payload);
+      clientA.socket.emit(event, payload);
+    }
+    await wait(1500);
+    check((await health()) === 200, 'server alive after a second attack round');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after 2nd round');
+
+    // --- structurally valid but hostile payloads: probe everything past the
+    //     guard (relay of huge structures, cache keys under client control,
+    //     prototype-pollution shapes). None of it should perturb the process. ---
+    fireHostileValidPayloads(clientA, room.roomId);
+    await wait(2500);
+    check((await health()) === 200, 'server alive after hostile-but-valid payloads');
+    check(clientA.socket.connected, 'client A survived hostile payloads');
+    check(clientB.socket.connected, 'client B survived hostile payloads');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after hostile payloads');
+
+    // --- a flood of made-up method names must not reset live rate-limit
+    //     windows: clearing the map would let the flooder immediately repeat
+    //     the expensive call it was just blocked on (PR review finding) ---
+    const limiterVictim = makeClient('smoke-client-D');
+    await limiterVictim.ready;
+    const firstRoom = await limiterVictim.callRaw('roomManager', 'createRoom', []);
+    const blocked = await limiterVictim.callRaw('roomManager', 'createRoom', []);
+    for (let i = 0; i < RATE_LIMIT_FLOOD_SIZE; i += 1) {
+      limiterVictim.socket.emit('e2ee-request', {
+        id: 20_000 + i,
+        type: 'REQUEST',
+        data: { module: 'roomManager', method: `bogus_${i}` },
+      });
+    }
+    await wait(800);
+    const afterFlood = await limiterVictim.callRaw('roomManager', 'createRoom', []);
+    check(!firstRoom.error, 'first expensive call succeeds');
+    check(blocked.error?.code === 1100, 'second call inside window is limited');
+    check(
+      afterFlood.error?.code === 1100,
+      'flooding distinct method names cannot reset the limiter',
+      afterFlood.error ? 'still limited' : 'BYPASS - limiter was reset',
+    );
+    limiterVictim.socket.disconnect();
+
+    // --- a rejected payload must never write a client-controlled string to the
+    //     log verbatim: it is synchronous I/O and the value can be 10MB ---
+    const logFlooder = makeClient('smoke-client-E');
+    await logFlooder.ready;
+    const huge = 'x'.repeat(2 * 1024 * 1024);
+    for (let i = 0; i < 20; i += 1) {
+      logFlooder.socket.emit('e2ee-request', { id: 30_000 + i, type: huge, data: { method: 'x' } });
+    }
+    await wait(1500);
+    check((await health()) === 200, 'server alive after oversized-log flood');
+    const stillWorks = await clientA.call('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+    check(stillWorks.length === 2, 'session unaffected by oversized-log flood');
+    logFlooder.socket.disconnect();
+
+    const clientC = makeClient('smoke-client-C');
+    await clientC.ready;
+    check(clientC.socket.connected, 'new client can still connect');
+
+    // --- rate limiting still does its job: two identical calls at once, the
+    //     second one lands inside the window and has to be rejected ---
+    const [firstCall, secondCall] = await Promise.all([
+      clientC.callRaw('roomManager', 'createRoom', []),
+      clientC.callRaw('roomManager', 'createRoom', []),
+    ]);
+    const rejected = [firstCall, secondCall].filter((p) => p.error?.code === 1100);
+    check(
+      rejected.length === 1,
+      'rate limiting still enforced',
+      `${rejected.length} of 2 concurrent calls rejected with 1100`,
+    );
+    clientC.socket.disconnect();
+  } finally {
+    clientA.socket.disconnect();
+    clientB.socket.disconnect();
+    server.kill('SIGKILL');
+  }
+}
+
+main()
+  .then(() => {
+    console.log(`\n${failures === 0 ? 'SMOKE TEST PASSED' : `SMOKE TEST FAILED (${failures})`}\n`);
+    process.exit(failures === 0 ? 0 : 1);
+  })
+  .catch((err: Error) => {
+    console.log(`\nSMOKE TEST ERRORED: ${err.message}\n`);
+    process.exit(1);
+  });

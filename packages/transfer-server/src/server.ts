@@ -1,3 +1,11 @@
+// Must come first: installs browser-global shims that
+// @onekeyfe/cross-inpage-provider-core reads while its module is evaluated.
+// eslint-disable-next-line import/order, import/first
+import './utils/nodeCompat';
+// Then the crash guards, before any other module can throw at load time.
+// eslint-disable-next-line import/order, import/first
+import { markServerStarted } from './utils/processGuards';
+
 import { createServer } from 'http';
 import { networkInterfaces } from 'os';
 
@@ -7,6 +15,7 @@ import { Server as SocketIOServer } from 'socket.io';
 
 import { e2eeServerApiSetup } from './e2eeServerApi';
 import { RoomManager } from './roomManager';
+import { logger } from './utils/logger';
 
 import type {
   IClientToServerEvents,
@@ -117,8 +126,9 @@ class E2EEServer {
         .json({ message: `Health check OK: ${new Date().toISOString()}` });
     });
 
+    // debug level on purpose: the k8s health probe polls /health continuously
     this.app.use((req, _res, next) => {
-      console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+      logger.debug({ method: req.method, path: req.path }, 'http.request');
       next();
     });
   }
@@ -130,6 +140,19 @@ class E2EEServer {
   }
 
   private setupSocketEvents(): void {
+    // handshake/transport failures never reach a connection handler; without
+    // this they are invisible and show up only as gateway 5xx
+    this.socketServer.engine.on('connection_error', (error) => {
+      logger.warn(
+        {
+          code: error.code,
+          message: error.message,
+          context: error.context,
+        },
+        'socket.connectionError',
+      );
+    });
+
     this.socketServer.on('connection', (socketClient) => {
       e2eeServerApiSetup({
         socketClient,
@@ -139,8 +162,9 @@ class E2EEServer {
       const instanceId =
         (socketClient.handshake.auth.instanceId as string) || '';
 
-      console.log(
-        `[Socket] User connected: ${socketClient.id}, instanceId: ${instanceId}`,
+      logger.info(
+        { socketId: socketClient.id, instanceId },
+        'socket.connected',
       );
 
       // TODO remove room when user disconnect
@@ -148,17 +172,20 @@ class E2EEServer {
 
       // Handle disconnection
       socketClient.on('disconnect', async (reason) => {
-        console.log(
-          `[Socket] User disconnected: ${socketClient.id}, instanceId: ${
-            socketClient.data.instanceId || ''
-          }, reason: ${reason}`,
+        logger.info(
+          {
+            socketId: socketClient.id,
+            instanceId: socketClient.data.instanceId || '',
+            reason,
+          },
+          'socket.disconnected',
         );
         await this.handleUserDisconnect(socketClient);
       });
 
       // Error handling
       socketClient.on('error', (error) => {
-        console.error(`[Socket] Socket error ${socketClient.id}:`, error);
+        logger.error({ err: error, socketId: socketClient.id }, 'socket.error');
       });
     });
   }
@@ -187,10 +214,10 @@ class E2EEServer {
           userId: undefined,
         };
 
-        console.log(`[Socket] User ${userId} left room ${targetRoomId}`);
+        logger.info({ userId, roomId: targetRoomId }, 'room.userLeft');
       }
     } catch (error) {
-      console.error('[Socket] Failed to handle user leaving room:', error);
+      logger.error({ err: error }, 'room.leaveFailed');
     }
   }
 
@@ -199,12 +226,13 @@ class E2EEServer {
       const result = await this.roomManager.leaveRoomBySocket(socket);
       await this.handleUserLeaveRoom(socket);
       if (result.roomId && result.userId) {
-        console.log(
-          `[Socket] Disconnected user ${result.userId} removed from room ${result.roomId}`,
+        logger.info(
+          { userId: result.userId, roomId: result.roomId },
+          'room.userRemovedOnDisconnect',
         );
       }
     } catch (error) {
-      console.error('[Socket] Failed to handle user disconnection:', error);
+      logger.error({ err: error }, 'socket.disconnectHandlingFailed');
     }
     // remove all event listeners
     socket.removeAllListeners();
@@ -230,6 +258,16 @@ class E2EEServer {
   }
 
   public startServer(): void {
+    // A listen() failure (port in use, EACCES) surfaces as an async 'error'
+    // event rather than a throw, so the uncaughtException guard never sees it.
+    // Without this the process stays up with nothing bound - health checks fail
+    // and k8s only restarts it after the probe times out. Log it and exit so the
+    // orchestrator recycles a clean pod immediately.
+    this.httpServer.on('error', (error) => {
+      logger.fatal({ err: error, port: this.config.port }, 'server.listenFailed');
+      process.exit(1);
+    });
+
     this.httpServer.listen(this.config.port, () => {
       const networkIPs = this.getNetworkIPs();
       
@@ -271,6 +309,7 @@ class E2EEServer {
         return `${lanTitleLine}\n${lanEndpointLine}\n${lanHealthLine}`;
       }).join('\n');
       
+      // human-readable banner; the structured startup event is logged below
       console.log(`
 ╔══════════════════════════════════════════════════════════╗
 ║                    E2EE Server                           ║
@@ -285,6 +324,17 @@ ${localhostEndpointLine}
 ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
 ╚══════════════════════════════════════════════════════════╝
       `);
+
+      markServerStarted();
+      logger.info(
+        {
+          port: this.config.port,
+          maxUsers: this.config.roomConfig.maxUsers,
+          roomTimeout: this.config.roomConfig.roomTimeout,
+          maxMessageSize: this.config.roomConfig.maxMessageSize,
+        },
+        'server.started',
+      );
     });
 
     // Graceful shutdown
@@ -293,9 +343,7 @@ ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
   }
 
   private gracefulShutdown(signal: string): void {
-    console.log(
-      `\n[Server] Received ${signal} signal, starting graceful shutdown...`,
-    );
+    logger.info({ signal }, 'server.shutdownStarted');
 
     // Close room manager
     if (this.roomManager) {
@@ -305,28 +353,35 @@ ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
     // Close Socket.IO server
     if (this.socketServer) {
       void this.socketServer.close(() => {
-        console.log('[Server] Socket.IO server closed');
+        logger.info('server.socketIoClosed');
       });
     }
 
     // Close HTTP server
     if (this.httpServer) {
       this.httpServer.close(() => {
-        console.log('[Server] HTTP server closed');
+        logger.info('server.httpClosed');
         process.exit(0);
       });
     }
 
     // Force exit timeout
     setTimeout(() => {
-      console.log('[Server] Force exit');
+      logger.warn('server.forceExit');
       process.exit(1);
     }, 10_000);
   }
 }
 
-// Start server
-const server = new E2EEServer();
-server.startServer();
+// Start server. A failure here is a startup fault - there are no live sessions
+// to preserve, so log it structured (this is the line that reaches OpenSearch)
+// and exit rather than lingering as a half-initialised process.
+try {
+  const server = new E2EEServer();
+  server.startServer();
+} catch (error) {
+  logger.fatal({ err: error }, 'server.startupFailed');
+  process.exit(1);
+}
 
 export default E2EEServer;
