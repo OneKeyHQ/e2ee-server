@@ -70,6 +70,7 @@ function createBridgeE2EEServer({
     },
     {
       socketClient,
+      roomManager,
     },
   );
 }

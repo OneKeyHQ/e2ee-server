@@ -46,6 +46,17 @@ export class RoomManager {
   /**
    * Create new room
    * @returns Room information (room ID and encryption key)
+   *
+   * NOTE on `encryptionKey` (returned here and as `roomKey` from joinRoom):
+   * this key is NOT used by the OneKey client, and it is not what protects
+   * transferred data. The client derives its own end-to-end key locally from
+   * material this server never sees - the pairing code shown in the QR code
+   * (only its roomId prefix ever reaches the server), an ECDHE shared secret
+   * negotiated directly between the two devices, and the room's user list.
+   * A malicious or compromised server therefore still cannot decrypt anything,
+   * because it holds none of that material. This server never encrypts or
+   * decrypts payloads with this key either - it only relays them. The field is
+   * kept for wire compatibility with existing clients.
    */
   @e2eeApiMethod()
   async createRoom(): Promise<{ roomId: string; encryptionKey: string }> {
@@ -101,6 +112,11 @@ export class RoomManager {
    * @param encryptionKey Encryption key
    * @param socketId User's Socket ID
    * @returns Join result
+   *
+   * The returned `roomKey` is server-generated and unused by the client - see
+   * the note on createRoom(). It is not part of the end-to-end encryption
+   * scheme; the client derives its own key from the pairing code and an ECDHE
+   * exchange this server is not party to.
    */
   @e2eeApiMethod()
   async joinRoom(

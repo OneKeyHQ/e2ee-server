@@ -48,6 +48,11 @@ export interface ISocketData {
 // Room data structure
 export interface IRoom {
   id: string;
+  // Server-generated key handed to clients on create/join. The OneKey client
+  // does not consume it, and this server never encrypts with it - payloads are
+  // relayed as-is. Real end-to-end protection comes from a key the clients
+  // derive themselves (pairing code + ECDHE shared secret + room user list),
+  // none of which this server holds. See RoomManager.createRoom().
   encryptionKey: string;
   users: Map<string, IE2EESocketUserInfo>;
   transferDirection?:

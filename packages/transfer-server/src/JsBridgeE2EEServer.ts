@@ -10,6 +10,7 @@ import type {
   IJsBridgeMessagePayload,
   IJsonRpcRequest,
 } from '@onekeyfe/cross-inpage-provider-types';
+import type { RoomManager } from './roomManager';
 import type { Socket } from 'socket.io';
 
 const logger = createModuleLogger('jsBridge');
@@ -94,14 +95,20 @@ function checkBridgePayload(
 export class JsBridgeE2EEServer extends JsBridgeBase {
   constructor(
     config: IJsBridgeConfig,
-    { socketClient }: { socketClient: Socket },
+    {
+      socketClient,
+      roomManager,
+    }: { socketClient: Socket; roomManager: RoomManager },
   ) {
     super(config);
     this.socketClient = socketClient;
+    this.roomManager = roomManager;
     this.setup();
   }
 
   private socketClient: Socket;
+
+  private roomManager: RoomManager;
 
   /**
    * Rate limit state, scoped to this connection rather than kept in a
@@ -427,6 +434,16 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     const checked = checkBridgePayload(payload, { requireMethod });
     if (!checked.valid) {
       this.logInvalidPayload(eventName, payload, checked.reason);
+      return undefined;
+    }
+
+    // `socket.to(roomId)` is a delivery operator: it reads the membership of the
+    // recipients and never checks the sender's. Without this, any connected
+    // socket that knows a roomId can inject client-to-client calls into a room
+    // it never joined - bypassing the room-slot invariant the pairing flow
+    // relies on. Membership is authoritative in RoomManager, so ask it.
+    if (!this.roomManager.isUserInRoom(roomId, this.socketClient.id).isInRoom) {
+      this.logInvalidPayload(eventName, payload, 'sender is not a room member');
       return undefined;
     }
 
