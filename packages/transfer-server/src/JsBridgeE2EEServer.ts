@@ -47,9 +47,27 @@ const CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE = -387_155_488;
 // Rate limiting whitelist - methods that are exempt from rate limiting
 const RATE_LIMIT_WHITELIST = new Set([
   'changeTransferDirection',
-  'getRoomUsers',
   'leaveRoom',
   'cancelTransfer',
+]);
+
+/**
+ * Per-method rate limit windows, overriding RATE_LIMIT_INTERVAL_MS.
+ *
+ * getRoomUsers is polled by the CLI once per second while pairing, so the
+ * default 3s window would reject two of every three polls. It was previously
+ * exempt from rate limiting altogether, which let it be called at line speed.
+ *
+ * The window must stay meaningfully below the caller's polling interval:
+ * setInterval fixes the interval at which requests are *sent*, and network
+ * latency shifts every request by roughly the same amount, so it cancels out
+ * of the gap the server sees. Only jitter moves that gap, in both directions.
+ * A 1000ms window against a 1000ms poll therefore sits exactly on the
+ * threshold - measured over localhost, where latency is under a millisecond
+ * and stable, timer drift alone still pushed one poll in 30 below it.
+ */
+const METHOD_RATE_LIMIT_INTERVAL_MS = new Map<string, number>([
+  ['getRoomUsers', 800],
 ]);
 
 const SUPPORTED_MESSAGE_TYPES: ReadonlySet<string> = new Set([
@@ -264,8 +282,10 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
 
     const now = Date.now();
     const lastTime = this.rateLimitState.get(rateLimitKey);
+    const interval =
+      METHOD_RATE_LIMIT_INTERVAL_MS.get(method) ?? RATE_LIMIT_INTERVAL_MS;
 
-    if (lastTime !== undefined && now - lastTime < RATE_LIMIT_INTERVAL_MS) {
+    if (lastTime !== undefined && now - lastTime < interval) {
       sendErrorResponse();
       return true;
     }
@@ -305,7 +325,14 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    */
   private pruneRateLimitState(now: number): void {
     for (const [key, time] of this.rateLimitState) {
-      if (now - time >= RATE_LIMIT_INTERVAL_MS) {
+      // Expire each entry against its own window, not the default one: a
+      // per-method window longer than the default would otherwise be dropped
+      // while still live, which is exactly the rate limit reset this function
+      // is written to prevent.
+      const method = key.slice(key.indexOf(':') + 1);
+      const interval =
+        METHOD_RATE_LIMIT_INTERVAL_MS.get(method) ?? RATE_LIMIT_INTERVAL_MS;
+      if (now - time >= interval) {
         this.rateLimitState.delete(key);
       }
     }
