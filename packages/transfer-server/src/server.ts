@@ -2,6 +2,9 @@
 // @onekeyfe/cross-inpage-provider-core reads while its module is evaluated.
 // eslint-disable-next-line import/order, import/first
 import './utils/nodeCompat';
+// Then the crash guards, before any other module can throw at load time.
+// eslint-disable-next-line import/order, import/first
+import { markServerStarted } from './utils/processGuards';
 
 import { createServer } from 'http';
 import { networkInterfaces } from 'os';
@@ -42,8 +45,6 @@ class E2EEServer {
   private corsOptions: cors.CorsOptions;
 
   constructor() {
-    this.setupProcessGuards();
-
     this.config = {
       port: parseInt(process.env.PORT || '3868', 10),
       corsOrigins: process.env.CORS_ORIGINS?.split(',') || [
@@ -135,38 +136,6 @@ class E2EEServer {
   private setupRoutes(): void {
     this.app.use((_req, res) => {
       res.status(404).json({ error: 'Not Found' });
-    });
-  }
-
-  /**
-   * Last line of defence against a single bad request killing the whole server.
-   *
-   * Node's default `--unhandled-rejections=throw` turns any unhandled rejection
-   * into a fatal error, and an uncaught exception exits the process outright.
-   * This server keeps all room state in memory and runs as a single replica, so
-   * one malformed packet on one connection would otherwise drop every active
-   * transfer and return 503 until the pod restarts.
-   *
-   * Handling both events deliberately keeps the process alive: the individual
-   * request is already lost, but the other sessions are not. Anything logged
-   * here is a real defect - the handler that let the error escape should be
-   * fixed rather than left to this net.
-   */
-  private setupProcessGuards(): void {
-    process.on('unhandledRejection', (reason) => {
-      try {
-        logger.fatal({ err: reason }, 'process.unhandledRejection');
-      } catch {
-        // never let the guard itself throw
-      }
-    });
-
-    process.on('uncaughtException', (error, origin) => {
-      try {
-        logger.fatal({ err: error, origin }, 'process.uncaughtException');
-      } catch {
-        // never let the guard itself throw
-      }
     });
   }
 
@@ -356,6 +325,7 @@ ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
 ╚══════════════════════════════════════════════════════════╝
       `);
 
+      markServerStarted();
       logger.info(
         {
           port: this.config.port,

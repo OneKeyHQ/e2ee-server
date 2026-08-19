@@ -13,6 +13,7 @@ import { join } from 'path';
 
 const SERVER_ENTRY = join(__dirname, '..', 'dist', 'server.js');
 const NODE_COMPAT = join(__dirname, '..', 'dist', 'utils', 'nodeCompat.js');
+const PROCESS_GUARDS = join(__dirname, '..', 'dist', 'utils', 'processGuards.js');
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -114,6 +115,30 @@ async function main(): Promise<void> {
     holder.kill('SIGKILL');
     check(hasFatal(conflict.stdout, 'server.listenFailed'), 'port conflict logs fatal to stdout');
     check(conflict.code === 1, 'port conflict exits non-zero instead of lingering', `exit code ${String(conflict.code)}`);
+  }
+
+  // 5. a throw during module load - the guards must already be registered, so
+  //    even an import-time crash is one structured fatal line, not native stderr
+  {
+    const script = `
+      require(${JSON.stringify(NODE_COMPAT)});
+      require(${JSON.stringify(PROCESS_GUARDS)});
+      throw new Error('import-time-boom');
+    `;
+    const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
+      const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (c: Buffer) => {
+        stdout += c.toString();
+      });
+      child.stderr.on('data', (c: Buffer) => {
+        stderr += c.toString();
+      });
+      child.on('close', (code) => resolve({ stdout, stderr, code }));
+    });
+    check(hasFatal(result.stdout, 'process.uncaughtException'), 'import-time crash logs fatal to stdout');
+    check(result.code === 1, 'import-time crash exits non-zero', `exit code ${String(result.code)}`);
   }
 }
 
