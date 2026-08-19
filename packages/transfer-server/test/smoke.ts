@@ -294,6 +294,9 @@ const appInfo = (device: string) => ({
  * Every malformed shape, aimed at all four listeners. The first entry is the
  * exact packet that took production down.
  */
+/** Matches RATE_LIMIT_MAX_TRACKED_METHODS in the server. */
+const RATE_LIMIT_FLOOD_SIZE = 64;
+
 const MALFORMED_PACKETS: Array<[string, unknown]> = [
   ['e2ee-request', { data: { module: 'roomManager', method: 'createRoom' } }],
   ['e2ee-request', undefined],
@@ -464,6 +467,45 @@ async function main(): Promise<void> {
     check(clientA.socket.connected, 'client A survived hostile payloads');
     check(clientB.socket.connected, 'client B survived hostile payloads');
     await checkBidirectional(clientA, clientB, room.roomId, 'after hostile payloads');
+
+    // --- a flood of made-up method names must not reset live rate-limit
+    //     windows: clearing the map would let the flooder immediately repeat
+    //     the expensive call it was just blocked on (PR review finding) ---
+    const limiterVictim = makeClient('smoke-client-D');
+    await limiterVictim.ready;
+    const firstRoom = await limiterVictim.callRaw('roomManager', 'createRoom', []);
+    const blocked = await limiterVictim.callRaw('roomManager', 'createRoom', []);
+    for (let i = 0; i < RATE_LIMIT_FLOOD_SIZE; i += 1) {
+      limiterVictim.socket.emit('e2ee-request', {
+        id: 20_000 + i,
+        type: 'REQUEST',
+        data: { module: 'roomManager', method: `bogus_${i}` },
+      });
+    }
+    await wait(800);
+    const afterFlood = await limiterVictim.callRaw('roomManager', 'createRoom', []);
+    check(!firstRoom.error, 'first expensive call succeeds');
+    check(blocked.error?.code === 1100, 'second call inside window is limited');
+    check(
+      afterFlood.error?.code === 1100,
+      'flooding distinct method names cannot reset the limiter',
+      afterFlood.error ? 'still limited' : 'BYPASS - limiter was reset',
+    );
+    limiterVictim.socket.disconnect();
+
+    // --- a rejected payload must never write a client-controlled string to the
+    //     log verbatim: it is synchronous I/O and the value can be 10MB ---
+    const logFlooder = makeClient('smoke-client-E');
+    await logFlooder.ready;
+    const huge = 'x'.repeat(2 * 1024 * 1024);
+    for (let i = 0; i < 20; i += 1) {
+      logFlooder.socket.emit('e2ee-request', { id: 30_000 + i, type: huge, data: { method: 'x' } });
+    }
+    await wait(1500);
+    check((await health()) === 200, 'server alive after oversized-log flood');
+    const stillWorks = await clientA.call('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+    check(stillWorks.length === 2, 'session unaffected by oversized-log flood');
+    logFlooder.socket.disconnect();
 
     const clientC = makeClient('smoke-client-C');
     await clientC.ready;

@@ -21,6 +21,26 @@ const RATE_LIMIT_INTERVAL_MS = 3000;
 // Well above the number of methods a real client calls.
 const RATE_LIMIT_MAX_TRACKED_METHODS = 64;
 
+// Log lines carry client-controlled strings, which can be as large as
+// maxHttpBufferSize (10MB). pino writes to fd 1 synchronously, so a verbatim
+// field turns a rejected packet into disk and log-pipeline amplification -
+// measured at 954MB of log output from three seconds of traffic.
+const LOG_FIELD_MAX_LENGTH = 64;
+
+// Rejecting a payload happens before rate limiting can apply (a malformed
+// packet may carry no method to limit on), so the log itself has to be capped
+// per connection or it can be triggered at socket speed.
+const INVALID_PAYLOAD_LOG_INTERVAL_MS = 1000;
+const INVALID_PAYLOAD_LOG_BURST = 5;
+
+/** Truncate a client-controlled value before it reaches a log line. */
+function capForLog(value: unknown, max: number = LOG_FIELD_MAX_LENGTH): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  return value.length > max ? `${value.slice(0, max)}...(${value.length})` : value;
+}
+
 const CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE = -387_155_488;
 
 // Rate limiting whitelist - methods that are exempt from rate limiting
@@ -95,6 +115,12 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    */
   private rateLimitState = new Map<string, number>();
 
+  private invalidPayloadLogWindowStart = 0;
+
+  private invalidPayloadLogCount = 0;
+
+  private invalidPayloadSuppressed = 0;
+
   override sendAsString = false;
 
   sendPayload(payload: IJsBridgeMessagePayload | string): void {
@@ -145,11 +171,53 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    * Log a rejected payload. Only metadata is recorded - the payload body carries
    * end-to-end encrypted user data and must never be written to logs.
    */
+  /**
+   * Rate limit this log itself. A rejected payload is logged before any method
+   * based limiting can apply, so without this an attacker can drive log volume
+   * at socket speed.
+   */
+  private shouldLogInvalidPayload(): boolean {
+    const now = Date.now();
+
+    if (now - this.invalidPayloadLogWindowStart >= INVALID_PAYLOAD_LOG_INTERVAL_MS) {
+      if (this.invalidPayloadSuppressed > 0) {
+        logger.warn(
+          {
+            socketId: this.socketClient.id,
+            suppressed: this.invalidPayloadSuppressed,
+          },
+          'jsBridge.invalidPayloadSuppressed',
+        );
+        this.invalidPayloadSuppressed = 0;
+      }
+      this.invalidPayloadLogWindowStart = now;
+      this.invalidPayloadLogCount = 0;
+    }
+
+    if (this.invalidPayloadLogCount < INVALID_PAYLOAD_LOG_BURST) {
+      this.invalidPayloadLogCount += 1;
+      return true;
+    }
+
+    this.invalidPayloadSuppressed += 1;
+    return false;
+  }
+
+  /**
+   * Log a rejected payload. Only capped metadata is recorded - the payload body
+   * carries end-to-end encrypted user data and must never be written to logs,
+   * and `type`/`method` are attacker-controlled strings that have to be
+   * truncated before they reach a synchronous log write.
+   */
   private logInvalidPayload(
     eventName: string,
     raw: unknown,
     reason: string,
   ): void {
+    if (!this.shouldLogInvalidPayload()) {
+      return;
+    }
+
     const payload = (
       raw && typeof raw === 'object' ? raw : {}
     ) as IJsBridgeMessagePayload;
@@ -159,8 +227,8 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         eventName,
         reason,
         socketId: this.socketClient.id,
-        payloadType: typeof payload.type === 'string' ? payload.type : null,
-        payloadMethod: typeof req?.method === 'string' ? req.method : null,
+        payloadType: capForLog(payload.type),
+        payloadMethod: capForLog(req?.method),
       },
       'jsBridge.invalidPayload',
     );
@@ -195,8 +263,24 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
       return true;
     }
 
-    if (this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS) {
+    if (
+      lastTime === undefined &&
+      this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS
+    ) {
       this.pruneRateLimitState(now);
+
+      if (this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS) {
+        // Every tracked window is still live, so this connection is flooding
+        // distinct method names. Refuse to track a new one and treat it as
+        // limited: the flood throttles itself and the existing windows - the
+        // expensive calls it is trying to reset - stay intact.
+        logger.debug(
+          { socketId: this.socketClient.id },
+          'jsBridge.rateLimitCapacityReached',
+        );
+        sendErrorResponse();
+        return true;
+      }
     }
 
     this.rateLimitState.set(rateLimitKey, now);
@@ -204,26 +288,19 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
   }
 
   /**
-   * Drop entries whose window has already passed - they can no longer rate
-   * limit anything. This is what keeps a client sending an endless stream of
-   * distinct method names from growing the map without bound.
+   * Reclaim entries whose window has already passed - they cannot rate limit
+   * anything any more.
+   *
+   * This only ever drops expired entries. Live windows are never touched: since
+   * `method` is client-controlled, wiping the map on a flood would let the
+   * flooder reset the windows of the calls it was just blocked on, turning the
+   * bound into a rate-limit bypass.
    */
   private pruneRateLimitState(now: number): void {
     for (const [key, time] of this.rateLimitState) {
       if (now - time >= RATE_LIMIT_INTERVAL_MS) {
         this.rateLimitState.delete(key);
       }
-    }
-
-    // Every entry is still live, so the connection is flooding distinct
-    // methods. Dropping the state costs one skipped check; an unbounded map
-    // costs the process.
-    if (this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS) {
-      this.rateLimitState.clear();
-      logger.warn(
-        { socketId: this.socketClient.id },
-        'jsBridge.rateLimitStateFlushed',
-      );
     }
   }
 
