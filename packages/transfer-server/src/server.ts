@@ -1,3 +1,8 @@
+// Must come first: installs browser-global shims that
+// @onekeyfe/cross-inpage-provider-core reads while its module is evaluated.
+// eslint-disable-next-line import/order, import/first
+import './utils/nodeCompat';
+
 import { createServer } from 'http';
 import { networkInterfaces } from 'os';
 
