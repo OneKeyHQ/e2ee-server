@@ -10,6 +10,7 @@ import type {
   IJsBridgeMessagePayload,
   IJsonRpcRequest,
 } from '@onekeyfe/cross-inpage-provider-types';
+import type { RoomManager } from './roomManager';
 import type { Socket } from 'socket.io';
 
 const logger = createModuleLogger('jsBridge');
@@ -46,9 +47,41 @@ const CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE = -387_155_488;
 // Rate limiting whitelist - methods that are exempt from rate limiting
 const RATE_LIMIT_WHITELIST = new Set([
   'changeTransferDirection',
-  'getRoomUsers',
   'leaveRoom',
   'cancelTransfer',
+]);
+
+/**
+ * Per-method rate limit windows, overriding RATE_LIMIT_INTERVAL_MS.
+ *
+ * This table is for legitimate high-frequency callers that a shipped client
+ * already depends on. It is not a way to opt out of rate limiting: a method
+ * absent from here is limited at RATE_LIMIT_INTERVAL_MS, and that default is
+ * the point - a newly added method is protected without anyone having to
+ * remember to protect it.
+ *
+ * Adding an entry means stating, on that entry, which caller needs it, at what
+ * frequency, and why the default window cannot serve it. An entry is a
+ * compatibility shim and has a lifetime: remove it once its caller no longer
+ * needs it, rather than leaving a permanent hole behind.
+ *
+ * A window also has to stay meaningfully below the caller's polling interval.
+ * setInterval fixes the interval at which requests are *sent*; network latency
+ * shifts every request by roughly the same amount, so it cancels out of the gap
+ * the server observes, and only jitter moves that gap - in both directions. A
+ * 1000ms window against a 1000ms poll therefore sits exactly on the threshold
+ * rather than safely above it: measured over localhost, where latency is under
+ * a millisecond and stable, timer drift alone still pushed one poll in 30 below
+ * it and into a rejection.
+ */
+const METHOD_RATE_LIMIT_INTERVAL_MS = new Map<string, number>([
+  // CLI, once per second for the whole pairing phase
+  // (ROOM_USERS_POLL_INTERVAL_MS in transfer-receiver-adapter.ts): it had no
+  // user-joined push to wait on, so it polls to notice a peer arriving. The
+  // default 3s window would reject two of every three polls. Remove this entry
+  // once the CLI consumes the user-joined event instead - the poll and this
+  // shim go together.
+  ['getRoomUsers', 800],
 ]);
 
 const SUPPORTED_MESSAGE_TYPES: ReadonlySet<string> = new Set([
@@ -94,14 +127,20 @@ function checkBridgePayload(
 export class JsBridgeE2EEServer extends JsBridgeBase {
   constructor(
     config: IJsBridgeConfig,
-    { socketClient }: { socketClient: Socket },
+    {
+      socketClient,
+      roomManager,
+    }: { socketClient: Socket; roomManager: RoomManager },
   ) {
     super(config);
     this.socketClient = socketClient;
+    this.roomManager = roomManager;
     this.setup();
   }
 
   private socketClient: Socket;
+
+  private roomManager: RoomManager;
 
   /**
    * Rate limit state, scoped to this connection rather than kept in a
@@ -257,8 +296,10 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
 
     const now = Date.now();
     const lastTime = this.rateLimitState.get(rateLimitKey);
+    const interval =
+      METHOD_RATE_LIMIT_INTERVAL_MS.get(method) ?? RATE_LIMIT_INTERVAL_MS;
 
-    if (lastTime !== undefined && now - lastTime < RATE_LIMIT_INTERVAL_MS) {
+    if (lastTime !== undefined && now - lastTime < interval) {
       sendErrorResponse();
       return true;
     }
@@ -298,7 +339,14 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    */
   private pruneRateLimitState(now: number): void {
     for (const [key, time] of this.rateLimitState) {
-      if (now - time >= RATE_LIMIT_INTERVAL_MS) {
+      // Expire each entry against its own window, not the default one: a
+      // per-method window longer than the default would otherwise be dropped
+      // while still live, which is exactly the rate limit reset this function
+      // is written to prevent.
+      const method = key.slice(key.indexOf(':') + 1);
+      const interval =
+        METHOD_RATE_LIMIT_INTERVAL_MS.get(method) ?? RATE_LIMIT_INTERVAL_MS;
+      if (now - time >= interval) {
         this.rateLimitState.delete(key);
       }
     }
@@ -427,6 +475,16 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     const checked = checkBridgePayload(payload, { requireMethod });
     if (!checked.valid) {
       this.logInvalidPayload(eventName, payload, checked.reason);
+      return undefined;
+    }
+
+    // `socket.to(roomId)` is a delivery operator: it reads the membership of the
+    // recipients and never checks the sender's. Without this, any connected
+    // socket that knows a roomId can inject client-to-client calls into a room
+    // it never joined - bypassing the room-slot invariant the pairing flow
+    // relies on. Membership is authoritative in RoomManager, so ask it.
+    if (!this.roomManager.isUserInRoom(roomId, this.socketClient.id).isInRoom) {
+      this.logInvalidPayload(eventName, payload, 'sender is not a room member');
       return undefined;
     }
 

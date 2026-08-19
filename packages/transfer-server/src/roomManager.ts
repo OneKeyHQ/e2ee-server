@@ -46,6 +46,17 @@ export class RoomManager {
   /**
    * Create new room
    * @returns Room information (room ID and encryption key)
+   *
+   * NOTE on `encryptionKey` (returned here and as `roomKey` from joinRoom):
+   * this key is NOT used by the OneKey client, and it is not what protects
+   * transferred data. The client derives its own end-to-end key locally from
+   * material this server never sees - the pairing code shown in the QR code
+   * (only its roomId prefix ever reaches the server), an ECDHE shared secret
+   * negotiated directly between the two devices, and the room's user list.
+   * A malicious or compromised server therefore still cannot decrypt anything,
+   * because it holds none of that material. This server never encrypts or
+   * decrypts payloads with this key either - it only relays them. The field is
+   * kept for wire compatibility with existing clients.
    */
   @e2eeApiMethod()
   async createRoom(): Promise<{ roomId: string; encryptionKey: string }> {
@@ -101,6 +112,11 @@ export class RoomManager {
    * @param encryptionKey Encryption key
    * @param socketId User's Socket ID
    * @returns Join result
+   *
+   * The returned `roomKey` is server-generated and unused by the client - see
+   * the note on createRoom(). It is not part of the end-to-end encryption
+   * scheme; the client derives its own key from the pairing code and an ECDHE
+   * exchange this server is not party to.
    */
   @e2eeApiMethod()
   async joinRoom(
@@ -185,6 +201,20 @@ export class RoomManager {
     logger.info({ userId, roomId, userCount: room.users.size }, "room.joined");
 
     await context?.socketClient.join(roomId);
+
+    // Tell the members already in the room that someone joined. The server
+    // never pushed this before, so a peer that needed to know had to poll
+    // getRoomUsers instead - which is why that method carries a high call rate.
+    //
+    // Emitted from the joining socket rather than the server, so the joiner is
+    // excluded (it does not need to be told about itself), and only after
+    // join() resolves, so the membership the event describes is already in
+    // effect if a receiver immediately calls getRoomUsers.
+    context?.socketClient.to(roomId).emit("user-joined", {
+      roomId,
+      userId,
+      userCount: room.users.size,
+    });
 
     return {
       success: true,
@@ -310,18 +340,26 @@ export class RoomManager {
       );
     }
     logger.debug({ roomId }, "room.getRoomUsers");
-    const room = this.rooms.get(roomId);
-    if (!room) {
-      logger.debug({ roomId }, "room.getRoomUsersNotFound");
-      return [];
-    }
-    // Validate that the socket is in the room
+
+    // A room the caller cannot see must be indistinguishable from a room that
+    // does not exist. Returning [] for a missing room while throwing for a room
+    // the caller is not in turned this into a room existence oracle - and this
+    // method is exempt from rate limiting, so it could be probed at line speed.
+    // isUserInRoom() already reports false for a missing room, so both cases
+    // fail here identically, with the same error code and message.
     const socketValidation = this.isUserInRoom(roomId, context.socketClient.id);
     if (!socketValidation.isInRoom) {
-      throw new E2eeError(
-        E2eeErrorCode.SOCKET_NOT_IN_ROOM,
-        "Socket must be in the room to set transfer direction"
+      logger.debug(
+        { roomId, roomExists: this.rooms.has(roomId) },
+        "room.getRoomUsersDenied"
       );
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
+    }
+
+    // isInRoom implies the room exists.
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
     const users: IE2EESocketUserInfo[] = sortBy(

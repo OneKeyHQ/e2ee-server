@@ -8,8 +8,19 @@ export { E2eeError, E2eeErrorCode } from './errors';
 export interface IServerToClientEvents {
   'room-created': (data: { roomId: string; encryptionKey: string }) => void;
   'room-joined': (data: { roomId: string; userId: string }) => void;
-  'user-joined': (data: { userId: string; userCount: number }) => void;
-  'user-left': (data: { userId: string; userCount: number }) => void;
+  // roomId is part of both payloads: a client multiplexes every room over one
+  // socket, so it needs to tell which room an event refers to. `user-left` has
+  // always been emitted with it - the declaration was simply out of date.
+  'user-joined': (data: {
+    roomId: string;
+    userId: string;
+    userCount: number;
+  }) => void;
+  'user-left': (data: {
+    roomId: string;
+    userId: string;
+    userCount: number;
+  }) => void;
   'encrypted-data': (data: {
     encryptedData: string;
     senderId: string;
@@ -48,6 +59,11 @@ export interface ISocketData {
 // Room data structure
 export interface IRoom {
   id: string;
+  // Server-generated key handed to clients on create/join. The OneKey client
+  // does not consume it, and this server never encrypts with it - payloads are
+  // relayed as-is. Real end-to-end protection comes from a key the clients
+  // derive themselves (pairing code + ECDHE shared secret + room user list),
+  // none of which this server holds. See RoomManager.createRoom().
   encryptionKey: string;
   users: Map<string, IE2EESocketUserInfo>;
   transferDirection?:
