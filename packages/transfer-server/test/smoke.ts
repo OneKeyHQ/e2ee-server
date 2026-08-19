@@ -200,7 +200,68 @@ async function deliver(
   return false;
 }
 
-/** Both directions, both channels - a full round trip between the two peers. */
+async function waitFor<T>(read: () => T | undefined, timeoutMs = 3000): Promise<T | undefined> {
+  for (let attempt = 0; attempt < timeoutMs / 100; attempt += 1) {
+    const value = read();
+    if (value !== undefined) {
+      return value;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await wait(100);
+  }
+  return undefined;
+}
+
+/**
+ * A real conversation, not two independent one-way deliveries: the initiator
+ * sends a request, the peer actually receives it and answers on the response
+ * channel, and the answer has to arrive back carrying the same correlation id.
+ *
+ * This is the shape a real client uses, and it is the only assertion that
+ * covers the causal chain - peer received, peer replied, initiator got the
+ * reply - rather than just "packets move in both directions".
+ */
+async function roundTrip(
+  initiator: IClient,
+  peer: IClient,
+  roomId: string,
+  token: string,
+): Promise<boolean> {
+  const peerSeen = peer.c2cRequests.length;
+  const initiatorSeen = initiator.c2cResponses.length;
+  const requestId = Date.now() % 1_000_000;
+
+  initiator.socket.emit('e2ee-c2c-request', {
+    payload: {
+      id: requestId,
+      type: 'REQUEST',
+      data: { module: 'peer', method: `roundTrip_${token}`, params: [token] },
+    },
+    roomId,
+  });
+
+  const request = await waitFor(() =>
+    peer.c2cRequests.length > peerSeen ? peer.c2cRequests[peer.c2cRequests.length - 1] : undefined,
+  );
+  if (!request || request.id !== requestId || (request.data?.params as string[])?.[0] !== token) {
+    return false;
+  }
+
+  // the peer answers the request it just received
+  peer.socket.emit('e2ee-c2c-response', {
+    payload: { id: request.id, type: 'RESPONSE', data: { result: `${token}-ack` } },
+    roomId,
+  });
+
+  const response = await waitFor(() =>
+    initiator.c2cResponses.length > initiatorSeen
+      ? initiator.c2cResponses[initiator.c2cResponses.length - 1]
+      : undefined,
+  );
+  return response?.id === requestId && response?.data?.result === `${token}-ack`;
+}
+
+/** Both directions, both channels, plus a full request/answer conversation each way. */
 async function checkBidirectional(
   clientA: IClient,
   clientB: IClient,
@@ -212,6 +273,8 @@ async function checkBidirectional(
     ['B -> A request', await deliver(clientB, clientA, 'request', roomId, `${stage}-ba-req`)],
     ['A -> B response', await deliver(clientA, clientB, 'response', roomId, `${stage}-ab-res`)],
     ['B -> A response', await deliver(clientB, clientA, 'response', roomId, `${stage}-ba-res`)],
+    ['A asks, B answers, A hears back', await roundTrip(clientA, clientB, roomId, `${stage}-aba`)],
+    ['B asks, A answers, B hears back', await roundTrip(clientB, clientA, roomId, `${stage}-bab`)],
   ] as Array<[string, boolean]>;
 
   for (const [direction, ok] of results) {
