@@ -202,6 +202,20 @@ export class RoomManager {
 
     await context?.socketClient.join(roomId);
 
+    // Tell the members already in the room that someone joined. The server
+    // never pushed this before, so a peer that needed to know had to poll
+    // getRoomUsers instead - which is why that method carries a high call rate.
+    //
+    // Emitted from the joining socket rather than the server, so the joiner is
+    // excluded (it does not need to be told about itself), and only after
+    // join() resolves, so the membership the event describes is already in
+    // effect if a receiver immediately calls getRoomUsers.
+    context?.socketClient.to(roomId).emit("user-joined", {
+      roomId,
+      userId,
+      userCount: room.users.size,
+    });
+
     return {
       success: true,
       userId,
