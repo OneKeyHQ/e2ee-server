@@ -82,7 +82,8 @@ type IClient = {
   socket: Socket;
   call: (module: string, method: string, params: unknown[]) => Promise<any>;
   callRaw: (module: string, method: string, params: unknown[]) => Promise<any>;
-  c2cInbox: unknown[];
+  c2cRequests: any[];
+  c2cResponses: any[];
   ready: Promise<void>;
 };
 
@@ -95,7 +96,8 @@ function makeClient(name: string): IClient {
 
   let seq = 0;
   const pending = new Map<number, (payload: any) => void>();
-  const c2cInbox: unknown[] = [];
+  const c2cRequests: any[] = [];
+  const c2cResponses: any[] = [];
 
   socket.on('e2ee-response', (payload: any) => {
     const resolver = pending.get(payload?.id as number);
@@ -104,7 +106,8 @@ function makeClient(name: string): IClient {
       resolver(payload);
     }
   });
-  socket.on('e2ee-c2c-request', (payload: unknown) => c2cInbox.push(payload));
+  socket.on('e2ee-c2c-request', (payload: any) => c2cRequests.push(payload));
+  socket.on('e2ee-c2c-response', (payload: any) => c2cResponses.push(payload));
 
   const callRaw = (module: string, method: string, params: unknown[]) => {
     seq += 1;
@@ -139,12 +142,81 @@ function makeClient(name: string): IClient {
     socket,
     call,
     callRaw,
-    c2cInbox,
+    c2cRequests,
+    c2cResponses,
     ready: new Promise<void>((resolve, reject) => {
       socket.on('connect', () => resolve());
       socket.on('connect_error', (err) => reject(new Error(`${name}: ${err.message}`)));
     }),
   };
+}
+
+/**
+ * Send one message across a client-to-client channel and confirm the peer
+ * received that exact payload. Each message carries a unique token so a stale
+ * or duplicated delivery cannot be mistaken for a fresh one.
+ *
+ * Every call uses a distinct method name: `e2ee-c2c-request` is rate limited
+ * per method, so reusing one would trip the limiter instead of testing delivery.
+ */
+async function deliver(
+  from: IClient,
+  to: IClient,
+  channel: 'request' | 'response',
+  roomId: string,
+  token: string,
+): Promise<boolean> {
+  const inbox = channel === 'request' ? to.c2cRequests : to.c2cResponses;
+  const before = inbox.length;
+
+  if (channel === 'request') {
+    from.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now(),
+        type: 'REQUEST',
+        data: { module: 'peer', method: `peerMessage_${token}`, params: [token] },
+      },
+      roomId,
+    });
+  } else {
+    from.socket.emit('e2ee-c2c-response', {
+      payload: { id: Date.now(), type: 'RESPONSE', data: { result: token } },
+      roomId,
+    });
+  }
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (inbox.length > before) {
+      const received = inbox[inbox.length - 1];
+      const carried =
+        channel === 'request'
+          ? (received?.data?.params as string[])?.[0]
+          : (received?.data?.result as string);
+      return carried === token;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await wait(100);
+  }
+  return false;
+}
+
+/** Both directions, both channels - a full round trip between the two peers. */
+async function checkBidirectional(
+  clientA: IClient,
+  clientB: IClient,
+  roomId: string,
+  stage: string,
+): Promise<void> {
+  const results = [
+    ['A -> B request', await deliver(clientA, clientB, 'request', roomId, `${stage}-ab-req`)],
+    ['B -> A request', await deliver(clientB, clientA, 'request', roomId, `${stage}-ba-req`)],
+    ['A -> B response', await deliver(clientA, clientB, 'response', roomId, `${stage}-ab-res`)],
+    ['B -> A response', await deliver(clientB, clientA, 'response', roomId, `${stage}-ba-res`)],
+  ] as Array<[string, boolean]>;
+
+  for (const [direction, ok] of results) {
+    check(ok, `${stage}: ${direction}`, ok ? 'payload intact' : 'not delivered');
+  }
 }
 
 const appInfo = (device: string) => ({
@@ -206,6 +278,9 @@ async function main(): Promise<void> {
     ]);
     check(usersBefore.length === 2, 'session established', `${usersBefore.length} users in room`);
 
+    // --- baseline: peers can talk both ways before anything goes wrong ---
+    await checkBidirectional(clientA, clientB, room.roomId, 'before');
+
     // --- both clients attack every listener ---
     console.log(
       `\nfiring ${MALFORMED_PACKETS.length} malformed packets from each client (${
@@ -234,16 +309,19 @@ async function main(): Promise<void> {
     ]);
     check(usersAfter.length === 2, 'room state intact', `${usersAfter.length} users still in room`);
 
-    clientA.socket.emit('e2ee-c2c-request', {
-      payload: { id: 99, type: 'REQUEST', data: { module: 'peer', method: 'ping' } },
-      roomId: room.roomId,
-    });
-    await wait(1000);
-    check(
-      clientB.c2cInbox.length === 1,
-      'client-to-client transfer works',
-      `B received ${clientB.c2cInbox.length} message(s)`,
-    );
+    // --- the point of the whole test: the two peers can still talk, both
+    //     ways, on both channels, with payloads arriving intact ---
+    await checkBidirectional(clientA, clientB, room.roomId, 'after');
+
+    // --- and it holds under a second round of abuse, so surviving once was
+    //     not luck ---
+    for (const [event, payload] of MALFORMED_PACKETS) {
+      clientB.socket.emit(event, payload);
+      clientA.socket.emit(event, payload);
+    }
+    await wait(1500);
+    check((await health()) === 200, 'server alive after a second attack round');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after 2nd round');
 
     const clientC = makeClient('smoke-client-C');
     await clientC.ready;
