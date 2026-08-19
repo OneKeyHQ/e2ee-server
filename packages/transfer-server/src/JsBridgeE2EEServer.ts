@@ -54,19 +54,33 @@ const RATE_LIMIT_WHITELIST = new Set([
 /**
  * Per-method rate limit windows, overriding RATE_LIMIT_INTERVAL_MS.
  *
- * getRoomUsers is polled by the CLI once per second while pairing, so the
- * default 3s window would reject two of every three polls. It was previously
- * exempt from rate limiting altogether, which let it be called at line speed.
+ * This table is for legitimate high-frequency callers that a shipped client
+ * already depends on. It is not a way to opt out of rate limiting: a method
+ * absent from here is limited at RATE_LIMIT_INTERVAL_MS, and that default is
+ * the point - a newly added method is protected without anyone having to
+ * remember to protect it.
  *
- * The window must stay meaningfully below the caller's polling interval:
- * setInterval fixes the interval at which requests are *sent*, and network
- * latency shifts every request by roughly the same amount, so it cancels out
- * of the gap the server sees. Only jitter moves that gap, in both directions.
- * A 1000ms window against a 1000ms poll therefore sits exactly on the
- * threshold - measured over localhost, where latency is under a millisecond
- * and stable, timer drift alone still pushed one poll in 30 below it.
+ * Adding an entry means stating, on that entry, which caller needs it, at what
+ * frequency, and why the default window cannot serve it. An entry is a
+ * compatibility shim and has a lifetime: remove it once its caller no longer
+ * needs it, rather than leaving a permanent hole behind.
+ *
+ * A window also has to stay meaningfully below the caller's polling interval.
+ * setInterval fixes the interval at which requests are *sent*; network latency
+ * shifts every request by roughly the same amount, so it cancels out of the gap
+ * the server observes, and only jitter moves that gap - in both directions. A
+ * 1000ms window against a 1000ms poll therefore sits exactly on the threshold
+ * rather than safely above it: measured over localhost, where latency is under
+ * a millisecond and stable, timer drift alone still pushed one poll in 30 below
+ * it and into a rejection.
  */
 const METHOD_RATE_LIMIT_INTERVAL_MS = new Map<string, number>([
+  // CLI, once per second for the whole pairing phase
+  // (ROOM_USERS_POLL_INTERVAL_MS in transfer-receiver-adapter.ts): it had no
+  // user-joined push to wait on, so it polls to notice a peer arriving. The
+  // default 3s window would reject two of every three polls. Remove this entry
+  // once the CLI consumes the user-joined event instead - the poll and this
+  // shim go together.
   ['getRoomUsers', 800],
 ]);
 
