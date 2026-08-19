@@ -318,6 +318,66 @@ const MALFORMED_PACKETS: Array<[string, unknown]> = [
   ['e2ee-c2c-response', { payload: 'nope', roomId: null }],
 ];
 
+/**
+ * Payloads that pass validation but are hostile in content - they probe what
+ * happens *after* the guard: relay of huge/awkward structures, rate-limit and
+ * memoize cache keys under client control, prototype-pollution shaped keys.
+ * None of these should perturb the process.
+ */
+function deepObject(depth: number): unknown {
+  let node: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < depth; i += 1) {
+    node = { n: node };
+  }
+  return node;
+}
+
+function fireHostileValidPayloads(clientA: IClient, roomId: string): void {
+  // 64 oversized method names - each becomes a rate-limit map key
+  for (let i = 0; i < 64; i += 1) {
+    clientA.socket.emit('e2ee-request', {
+      id: 6000 + i,
+      type: 'REQUEST',
+      data: { module: 'roomManager', method: `${i}_${'m'.repeat(50 * 1024)}` },
+    });
+  }
+  // many distinct module names - memoize cache keys
+  for (let i = 0; i < 2000; i += 1) {
+    clientA.socket.emit('e2ee-request', {
+      id: 7000 + i,
+      type: 'REQUEST',
+      data: { module: `mod_${i}`, method: 'createRoom' },
+    });
+  }
+  // prototype-pollution shaped params
+  clientA.socket.emit('e2ee-request', {
+    id: 8001,
+    type: 'REQUEST',
+    data: {
+      module: 'roomManager',
+      method: 'joinRoom',
+      params: [{ __proto__: { polluted: true }, constructor: { prototype: { x: 1 } }, roomId }],
+    },
+  });
+  // huge params array, and an awkwardly nested but legal object relayed to the peer
+  clientA.socket.emit('e2ee-request', {
+    id: 8002,
+    type: 'REQUEST',
+    data: { module: 'roomManager', method: 'joinRoom', params: new Array(100_000).fill('x') },
+  });
+  clientA.socket.emit('e2ee-c2c-request', {
+    payload: { id: 8003, type: 'REQUEST', data: { module: 'peer', method: 'deep', params: [deepObject(500)] } },
+    roomId,
+  });
+  // hostile field types on the response path
+  clientA.socket.emit('e2ee-request', {
+    id: 8004,
+    type: 'REQUEST',
+    scope: deepObject(200) as never,
+    data: { module: 'roomManager', method: 'nope' },
+  });
+}
+
 async function main(): Promise<void> {
   console.log(`\nstarting server on port ${PORT}`);
   const server = await startServer();
@@ -394,6 +454,16 @@ async function main(): Promise<void> {
     await wait(1500);
     check((await health()) === 200, 'server alive after a second attack round');
     await checkBidirectional(clientA, clientB, room.roomId, 'after 2nd round');
+
+    // --- structurally valid but hostile payloads: probe everything past the
+    //     guard (relay of huge structures, cache keys under client control,
+    //     prototype-pollution shapes). None of it should perturb the process. ---
+    fireHostileValidPayloads(clientA, room.roomId);
+    await wait(2500);
+    check((await health()) === 200, 'server alive after hostile-but-valid payloads');
+    check(clientA.socket.connected, 'client A survived hostile payloads');
+    check(clientB.socket.connected, 'client B survived hostile payloads');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after hostile payloads');
 
     const clientC = makeClient('smoke-client-C');
     await clientC.ready;
