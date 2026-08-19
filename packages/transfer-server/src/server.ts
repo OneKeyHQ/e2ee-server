@@ -289,6 +289,16 @@ class E2EEServer {
   }
 
   public startServer(): void {
+    // A listen() failure (port in use, EACCES) surfaces as an async 'error'
+    // event rather than a throw, so the uncaughtException guard never sees it.
+    // Without this the process stays up with nothing bound - health checks fail
+    // and k8s only restarts it after the probe times out. Log it and exit so the
+    // orchestrator recycles a clean pod immediately.
+    this.httpServer.on('error', (error) => {
+      logger.fatal({ err: error, port: this.config.port }, 'server.listenFailed');
+      process.exit(1);
+    });
+
     this.httpServer.listen(this.config.port, () => {
       const networkIPs = this.getNetworkIPs();
       
@@ -393,8 +403,15 @@ ${localhostHealthLine}${networkLines ? '\n' + networkLines : ''}
   }
 }
 
-// Start server
-const server = new E2EEServer();
-server.startServer();
+// Start server. A failure here is a startup fault - there are no live sessions
+// to preserve, so log it structured (this is the line that reaches OpenSearch)
+// and exit rather than lingering as a half-initialised process.
+try {
+  const server = new E2EEServer();
+  server.startServer();
+} catch (error) {
+  logger.fatal({ err: error }, 'server.startupFailed');
+  process.exit(1);
+}
 
 export default E2EEServer;
