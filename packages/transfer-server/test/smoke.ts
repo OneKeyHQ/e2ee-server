@@ -293,15 +293,24 @@ async function main(): Promise<void> {
     }
     await wait(2000);
 
-    // --- the process has to be alive for anything else to be checkable ---
+    // --- did the process survive? ---
     const status = await health();
-    check(status === 200, 'server process alive', `/health = ${String(status)}`);
-    if (status !== 200) {
-      return;
-    }
+    const serverAlive = status === 200;
+    check(serverAlive, 'server process alive', `/health = ${String(status)}`);
 
+    // Checked whether or not the server is up: when it dies it takes every
+    // connection with it, and recording that is the point of the comparison
+    // against the pre-fix build. Give the transport a moment to notice first.
+    if (!serverAlive) {
+      await wait(1500);
+    }
     check(clientA.socket.connected, 'client A still connected');
     check(clientB.socket.connected, 'client B still connected');
+
+    // everything below needs a live server to say anything at all
+    if (!serverAlive) {
+      return;
+    }
 
     // --- and the session has to have survived, not just the process ---
     const usersAfter = await clientA.call('roomManager', 'getRoomUsers', [
