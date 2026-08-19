@@ -326,18 +326,26 @@ export class RoomManager {
       );
     }
     logger.debug({ roomId }, "room.getRoomUsers");
-    const room = this.rooms.get(roomId);
-    if (!room) {
-      logger.debug({ roomId }, "room.getRoomUsersNotFound");
-      return [];
-    }
-    // Validate that the socket is in the room
+
+    // A room the caller cannot see must be indistinguishable from a room that
+    // does not exist. Returning [] for a missing room while throwing for a room
+    // the caller is not in turned this into a room existence oracle - and this
+    // method is exempt from rate limiting, so it could be probed at line speed.
+    // isUserInRoom() already reports false for a missing room, so both cases
+    // fail here identically, with the same error code and message.
     const socketValidation = this.isUserInRoom(roomId, context.socketClient.id);
     if (!socketValidation.isInRoom) {
-      throw new E2eeError(
-        E2eeErrorCode.SOCKET_NOT_IN_ROOM,
-        "Socket must be in the room to set transfer direction"
+      logger.debug(
+        { roomId, roomExists: this.rooms.has(roomId) },
+        "room.getRoomUsersDenied"
       );
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
+    }
+
+    // isInRoom implies the room exists.
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
     const users: IE2EESocketUserInfo[] = sortBy(
