@@ -101,7 +101,6 @@ export interface IRoomConfig {
 // Server configuration
 export interface IServerConfig {
   port: number;
-  corsOrigins: string[];
   roomConfig: IRoomConfig;
 }
 
