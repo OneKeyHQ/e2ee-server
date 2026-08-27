@@ -407,6 +407,49 @@ async function main(): Promise<void> {
     // --- baseline: peers can talk both ways before anything goes wrong ---
     await checkBidirectional(clientA, clientB, room.roomId, 'before');
 
+    // --- security: a socket that never joined the room must not be able to
+    //     inject c2c traffic into it. The relay emits to the client-supplied
+    //     roomId, so without a membership check any connected socket could push
+    //     cancelTransfer / verifyPairingCode / a forged response into a live
+    //     session it only knows the id of. The outsider knows room.roomId but
+    //     never called joinRoom, so both channels must be dropped, and the two
+    //     real members must be unaffected. ---
+    const outsider = makeClient('smoke-client-outsider');
+    await outsider.ready;
+    const injectToken = `inject-${Date.now()}`;
+    const seenBefore = {
+      aReq: clientA.c2cRequests.length,
+      bReq: clientB.c2cRequests.length,
+      aRes: clientA.c2cResponses.length,
+      bRes: clientB.c2cResponses.length,
+    };
+    outsider.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now(),
+        type: 'REQUEST',
+        data: { module: 'peer', method: `inject_${injectToken}`, params: [injectToken] },
+      },
+      roomId: room.roomId,
+    });
+    outsider.socket.emit('e2ee-c2c-response', {
+      payload: { id: Date.now(), type: 'RESPONSE', data: { result: injectToken } },
+      roomId: room.roomId,
+    });
+    await wait(1000);
+    const injected =
+      clientA.c2cRequests.length > seenBefore.aReq ||
+      clientB.c2cRequests.length > seenBefore.bReq ||
+      clientA.c2cResponses.length > seenBefore.aRes ||
+      clientB.c2cResponses.length > seenBefore.bRes;
+    check(
+      !injected,
+      'non-member cannot inject c2c into a room it never joined',
+      injected ? 'INJECTED - membership check bypassed' : 'both channels dropped',
+    );
+    check((await health()) === 200, 'server alive after c2c injection attempt');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after injection attempt');
+    outsider.socket.disconnect();
+
     // --- both clients attack every listener ---
     console.log(
       `\nfiring ${MALFORMED_PACKETS.length} malformed packets from each client (${

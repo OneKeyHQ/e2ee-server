@@ -64,13 +64,17 @@ export class E2eeError extends Error {
     return new E2eeError(code, message);
   }
 
-  // Convert to JSON for serialization
+  // Convert to JSON for serialization.
+  //
+  // This runs when the error is JSON-serialized onto a socket.io payload and
+  // sent to the client, so it must not leak the server stack trace (file paths,
+  // internal structure). `stack` stays on the instance for server-side pino
+  // logging, which reads err.stack directly rather than through toJSON.
   toJSON() {
     return {
       name: this.name,
       message: this.message,
       code: this.code,
-      stack: this.stack,
     };
   }
 }

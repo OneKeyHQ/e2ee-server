@@ -424,6 +424,18 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
       return undefined;
     }
 
+    // The relay targets `roomId` verbatim (socket.to(roomId).emit), but roomId
+    // comes from the client envelope. Without this check any connected socket
+    // could inject c2c traffic into a room it never joined - forcing peers to
+    // cancel/abort (cancelTransfer is rate-limit exempt), burning their pairing
+    // attempt budget, or hijacking an in-flight response by id. A legitimate
+    // peer is always joined to its Socket.IO room via roomManager.joinRoom
+    // before it sends any c2c message, so a genuine member is never rejected.
+    if (!this.socketClient.rooms.has(roomId)) {
+      this.logInvalidPayload(eventName, payload, 'sender is not a member of roomId');
+      return undefined;
+    }
+
     const checked = checkBridgePayload(payload, { requireMethod });
     if (!checked.valid) {
       this.logInvalidPayload(eventName, payload, checked.reason);
