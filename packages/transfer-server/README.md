@@ -128,13 +128,15 @@ MAX_MESSAGE_SIZE=10485760
 1. **Message Size Limits**: Prevents DoS attacks by limiting message sizes
 2. **Room Timeouts**: Automatic cleanup of inactive rooms
 3. **User Limits**: Configurable maximum users per room
-4. **CORS Protection**: Configurable CORS origins
+4. **Room Membership Enforcement**: Client-to-client messages are relayed only
+   for a sender that has actually joined the target room
 5. **Input Validation**: Automatic validation of all API inputs
 
 ### Best Practices
 
 - Always use HTTPS in production
-- Configure CORS origins appropriately
+- Do not treat CORS as access control: it is deliberately permissive and
+  `Origin` is not the auth boundary here (see `corsOptions` in `src/server.ts`)
 - Implement rate limiting with a reverse proxy
 - Monitor room creation patterns for abuse
 - Use environment variables for sensitive configuration
