@@ -57,7 +57,6 @@ The transfer server is a Socket.IO-based real-time communication server with end
 
 **Configuration (via environment variables):**
 - `PORT` (default: 3868)
-- `CORS_ORIGINS` (comma-separated list)
 - `MAX_USERS_PER_ROOM` (default: 2)
 - `ROOM_TIMEOUT` (default: 3600000ms)
 - `MAX_MESSAGE_SIZE` (default: 10485760 bytes)
@@ -100,7 +99,11 @@ A Midway.js-based component for OneKey Prime synchronization functionality.
 2. **Error Handling**: The transfer-server includes custom error codes (see `errors.ts`). The cloud-sync-server uses Midway.js error handling patterns.
 
 3. **Security**: 
-   - CORS is configured but currently allows all origins in development
+   - CORS is intentionally permissive; the `Origin` header is not an auth
+     boundary here (native/desktop clients send no usable Origin, and there are
+     no cookie credentials to protect). Access control is the out-of-band
+     pairing code plus the room membership check on the c2c relay. See the
+     comment on `corsOptions` in `server.ts`.
    - Message size limits are enforced
    - Room timeouts prevent resource exhaustion
 

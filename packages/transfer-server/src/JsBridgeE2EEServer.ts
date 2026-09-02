@@ -125,6 +125,13 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
 
   sendPayload(payload: IJsBridgeMessagePayload | string): void {
     const p = payload as IJsBridgeMessagePayload;
+    // JsBridgeBase.createPayload() has already replaced `error` with a plain
+    // copy (toPlainError) that carries err.stack verbatim, so
+    // E2eeError.toJSON() never runs on this path. Strip the server stack here,
+    // at the single egress point, for every error type.
+    if (p?.error && typeof p.error === 'object') {
+      delete (p.error as { stack?: string }).stack;
+    }
     const e = p?.error as { message: string; code: number } | undefined;
     if (e && e?.code && e?.code === CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE) {
       this.socketClient.emit('e2ee-c2c-response', payload);
@@ -421,6 +428,18 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
 
     if (typeof roomId !== 'string' || !roomId) {
       this.logInvalidPayload(eventName, payload, 'roomId is missing');
+      return undefined;
+    }
+
+    // The relay targets `roomId` verbatim (socket.to(roomId).emit), but roomId
+    // comes from the client envelope. Without this check any connected socket
+    // could inject c2c traffic into a room it never joined - forcing peers to
+    // cancel/abort (cancelTransfer is rate-limit exempt), burning their pairing
+    // attempt budget, or hijacking an in-flight response by id. A legitimate
+    // peer is always joined to its Socket.IO room via roomManager.joinRoom
+    // before it sends any c2c message, so a genuine member is never rejected.
+    if (!this.socketClient.rooms.has(roomId)) {
+      this.logInvalidPayload(eventName, payload, 'sender is not a member of roomId');
       return undefined;
     }
 

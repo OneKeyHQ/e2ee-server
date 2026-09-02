@@ -49,7 +49,6 @@ The server can be configured using environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3868` | Server listening port |
-| `CORS_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
 | `MAX_USERS_PER_ROOM` | `2` | Maximum users allowed per room |
 | `ROOM_TIMEOUT` | `3600000` | Room timeout in milliseconds (1 hour) |
 | `MAX_MESSAGE_SIZE` | `10485760` | Maximum message size in bytes (10MB) |
@@ -57,7 +56,6 @@ The server can be configured using environment variables:
 Example `.env` file:
 ```env
 PORT=3868
-CORS_ORIGINS=http://localhost:3000,https://app.onekey.so
 MAX_USERS_PER_ROOM=2
 ROOM_TIMEOUT=3600000
 MAX_MESSAGE_SIZE=10485760
@@ -130,13 +128,15 @@ MAX_MESSAGE_SIZE=10485760
 1. **Message Size Limits**: Prevents DoS attacks by limiting message sizes
 2. **Room Timeouts**: Automatic cleanup of inactive rooms
 3. **User Limits**: Configurable maximum users per room
-4. **CORS Protection**: Configurable CORS origins
+4. **Room Membership Enforcement**: Client-to-client messages are relayed only
+   for a sender that has actually joined the target room
 5. **Input Validation**: Automatic validation of all API inputs
 
 ### Best Practices
 
 - Always use HTTPS in production
-- Configure CORS origins appropriately
+- Do not treat CORS as access control: it is deliberately permissive and
+  `Origin` is not the auth boundary here (see `corsOptions` in `src/server.ts`)
 - Implement rate limiting with a reverse proxy
 - Monitor room creation patterns for abuse
 - Use environment variables for sensitive configuration
@@ -276,8 +276,11 @@ curl http://localhost:3868/stats
    ```
 
 2. **CORS Issues**
-   - Ensure `CORS_ORIGINS` environment variable is properly configured
-   - Check that client origin matches allowed origins
+   - CORS is intentionally permissive: every origin is accepted and there is no
+     allowlist to configure
+   - `Origin` is not the auth boundary here - access control is the out-of-band
+     pairing code plus the room membership check on the client-to-client relay.
+     See the comment on `corsOptions` in `src/server.ts` for why
 
 3. **Connection Timeouts**
    - Verify firewall settings

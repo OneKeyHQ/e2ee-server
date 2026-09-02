@@ -63,6 +63,12 @@ export class RoomManager {
       }
     } while (this.rooms.has(roomId));
 
+    // NOTE: this is NOT the end-to-end encryption key. The real E2EE key never
+    // reaches the server - clients derive it themselves from the out-of-band
+    // pairing code plus an ECDHE exchange, so the server cannot decrypt transfer
+    // payloads. This server-generated key is currently unused by clients and is
+    // reserved for a future additional (transport-layer) encryption layer. Do
+    // not treat it as the secret that protects user data.
     const encryptionKey = cryptoUtils.generateEncryptionKey();
 
     const room: IRoom = {

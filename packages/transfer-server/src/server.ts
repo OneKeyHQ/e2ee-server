@@ -47,19 +47,6 @@ class E2EEServer {
   constructor() {
     this.config = {
       port: parseInt(process.env.PORT || '3868', 10),
-      corsOrigins: process.env.CORS_ORIGINS?.split(',') || [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:3868',
-        'null',
-        'chrome-extension://*',
-        'moz-extension://*',
-        'ws://*',
-        'wss://*',
-        'http://*',
-        'https://*',
-        '*',
-      ],
       roomConfig: {
         maxUsers: parseInt(process.env.MAX_USERS_PER_ROOM || '2', 10),
         roomTimeout: parseInt(process.env.ROOM_TIMEOUT || '3600000', 10), // 1 hour
@@ -76,18 +63,26 @@ class E2EEServer {
     this.setupMiddleware();
     this.setupRoutes();
 
+    // CORS is intentionally permissive: the Origin header is not a security
+    // boundary for this server, so it is not used to gate connections. This
+    // replaces an allowlist that was built but never enforced (the callback
+    // returned true for every origin, with the reject branch commented out) -
+    // keeping the same allow-all behavior, without pretending to filter.
+    //
+    // Why Origin cannot be the boundary here:
+    //   - The primary clients send no usable Origin: iOS/Android native (React
+    //     Native sends no Origin header) and the desktop production build
+    //     (file:// -> Origin: null), so an allowlist could never admit them.
+    //   - There is no ambient credential to protect: the client connects with
+    //     withCredentials=false and there are no cookies/sessions, so a
+    //     cross-origin browser page gains nothing over a direct connection.
+    //   - Origin is only trustworthy for real browsers; a non-browser client
+    //     (the realistic attacker against a relay) can forge or omit it.
+    // The actual access control is the out-of-band pairing code plus the room
+    // membership check enforced on the client-to-client relay.
     this.corsOptions = {
-      origin: (origin, callback) => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-        if (!origin || this.config.corsOrigins.includes(origin)) {
-          callback(null, true);
-        } else {
-          callback(null, true);
-          // callback(new Error('Invalid CORS request'));
-        }
-      },
+      origin: true,
       methods: ['GET', 'POST'],
-      credentials: true,
     };
 
     this.socketServer = new SocketIOServer<
