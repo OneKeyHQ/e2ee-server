@@ -133,7 +133,6 @@ Each package can be configured using environment variables. Create `.env` files 
 #### transfer-server
 ```env
 PORT=3868
-CORS_ORIGINS=http://localhost:3000
 MAX_USERS_PER_ROOM=2
 ROOM_TIMEOUT=3600000
 MAX_MESSAGE_SIZE=10485760

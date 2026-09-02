@@ -49,7 +49,6 @@ The server can be configured using environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3868` | Server listening port |
-| `CORS_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
 | `MAX_USERS_PER_ROOM` | `2` | Maximum users allowed per room |
 | `ROOM_TIMEOUT` | `3600000` | Room timeout in milliseconds (1 hour) |
 | `MAX_MESSAGE_SIZE` | `10485760` | Maximum message size in bytes (10MB) |
@@ -57,7 +56,6 @@ The server can be configured using environment variables:
 Example `.env` file:
 ```env
 PORT=3868
-CORS_ORIGINS=http://localhost:3000,https://app.onekey.so
 MAX_USERS_PER_ROOM=2
 ROOM_TIMEOUT=3600000
 MAX_MESSAGE_SIZE=10485760
@@ -276,8 +274,11 @@ curl http://localhost:3868/stats
    ```
 
 2. **CORS Issues**
-   - Ensure `CORS_ORIGINS` environment variable is properly configured
-   - Check that client origin matches allowed origins
+   - CORS is intentionally permissive: every origin is accepted and there is no
+     allowlist to configure
+   - `Origin` is not the auth boundary here - access control is the out-of-band
+     pairing code plus the room membership check on the client-to-client relay.
+     See the comment on `corsOptions` in `src/server.ts` for why
 
 3. **Connection Timeouts**
    - Verify firewall settings
