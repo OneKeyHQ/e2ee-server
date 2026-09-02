@@ -550,6 +550,29 @@ async function main(): Promise<void> {
     check(stillWorks.length === 2, 'session unaffected by oversized-log flood');
     logFlooder.socket.disconnect();
 
+    // --- an error response must never carry the server stack trace. It cannot
+    //     be stopped by E2eeError.toJSON(): JsBridgeBase.createPayload()
+    //     replaces payload.error with its own plain copy first, and that copy
+    //     (toPlainError) reads err.stack straight off the instance. So it is
+    //     stripped in sendPayload(), and it has to stay stripped.
+    //     A fresh client keeps this off the rate-limit windows used above. ---
+    const errorProbe = makeClient('smoke-client-F');
+    await errorProbe.ready;
+    const errorPayload = await errorProbe.callRaw('roomManager', 'joinRoom', [
+      { roomId: 'not-a-valid-room-id', ...appInfo('F') },
+    ]);
+    check(
+      Boolean(errorPayload.error),
+      'invalid roomId is rejected with an error',
+      `code=${String(errorPayload.error?.code)}`,
+    );
+    check(
+      errorPayload.error?.stack === undefined,
+      'error response carries no server stack trace',
+      errorPayload.error?.stack ? 'LEAKED - server stack sent to client' : 'no stack field',
+    );
+    errorProbe.socket.disconnect();
+
     const clientC = makeClient('smoke-client-C');
     await clientC.ready;
     check(clientC.socket.connected, 'new client can still connect');

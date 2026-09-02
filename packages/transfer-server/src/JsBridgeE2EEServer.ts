@@ -125,6 +125,13 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
 
   sendPayload(payload: IJsBridgeMessagePayload | string): void {
     const p = payload as IJsBridgeMessagePayload;
+    // JsBridgeBase.createPayload() has already replaced `error` with a plain
+    // copy (toPlainError) that carries err.stack verbatim, so
+    // E2eeError.toJSON() never runs on this path. Strip the server stack here,
+    // at the single egress point, for every error type.
+    if (p?.error && typeof p.error === 'object') {
+      delete (p.error as { stack?: string }).stack;
+    }
     const e = p?.error as { message: string; code: number } | undefined;
     if (e && e?.code && e?.code === CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE) {
       this.socketClient.emit('e2ee-c2c-response', payload);

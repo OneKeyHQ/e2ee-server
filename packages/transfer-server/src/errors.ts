@@ -64,12 +64,16 @@ export class E2eeError extends Error {
     return new E2eeError(code, message);
   }
 
-  // Convert to JSON for serialization.
+  // Convert to JSON for serialization, without the server stack trace.
   //
-  // This runs when the error is JSON-serialized onto a socket.io payload and
-  // sent to the client, so it must not leak the server stack trace (file paths,
-  // internal structure). `stack` stays on the instance for server-side pino
-  // logging, which reads err.stack directly rather than through toJSON.
+  // This is not what keeps the stack off the socket path: JsBridgeBase
+  // .createPayload() replaces payload.error with its own plain copy
+  // (toPlainError), reading err.stack off the instance directly, so toJSON()
+  // never runs before a response is emitted. The stack is stripped at the
+  // single egress point instead - see JsBridgeE2EEServer.sendPayload(). This
+  // stays as defence in depth for any path that serializes an E2eeError
+  // directly. `stack` remains on the instance for server-side pino logging,
+  // which also reads err.stack rather than going through toJSON.
   toJSON() {
     return {
       name: this.name,
