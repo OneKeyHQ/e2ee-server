@@ -1,5 +1,3 @@
-/* eslint-disable no-restricted-syntax */
-
 import { JsBridgeE2EEClient } from './JsBridgeE2EEClient';
 import { RemoteApiProxyBase } from './utils/RemoteApiProxyBase';
 

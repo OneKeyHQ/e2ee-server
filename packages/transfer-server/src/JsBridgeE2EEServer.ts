@@ -1,31 +1,20 @@
-/* eslint-disable no-restricted-syntax */
 import { JsBridgeBase } from '@onekeyfe/cross-inpage-provider-core';
 import { IJsBridgeMessageTypes } from '@onekeyfe/cross-inpage-provider-types';
 
 import { E2eeError, E2eeErrorCode } from './errors';
-import { createModuleLogger } from './utils/logger';
+import { CHUNK_PACKET_BYTES, RESPONSE_PACKET_BYTES, RELAY_BYTES_PER_SECOND, RelayTrafficBudget, isValidTransferChunk, measureJsonBytes } from './relayPolicy';
+import { RequestRateLimiter } from './requestRateLimiter';
+import { capForLog, createModuleLogger } from './utils/logger';
 
 import type {
   IJsBridgeConfig,
   IJsBridgeMessagePayload,
   IJsonRpcRequest,
 } from '@onekeyfe/cross-inpage-provider-types';
+import type { RoomManager } from './roomManager';
 import type { Socket } from 'socket.io';
 
 const logger = createModuleLogger('jsBridge');
-
-const RATE_LIMIT_INTERVAL_MS = 3000;
-
-// Upper bound on distinct methods tracked per connection. `method` comes from
-// the client, so without a cap a single socket could grow this map forever.
-// Well above the number of methods a real client calls.
-const RATE_LIMIT_MAX_TRACKED_METHODS = 64;
-
-// Log lines carry client-controlled strings, which can be as large as
-// maxHttpBufferSize (10MB). pino writes to fd 1 synchronously, so a verbatim
-// field turns a rejected packet into disk and log-pipeline amplification -
-// measured at 954MB of log output from three seconds of traffic.
-const LOG_FIELD_MAX_LENGTH = 64;
 
 // Rejecting a payload happens before rate limiting can apply (a malformed
 // packet may carry no method to limit on), so the log itself has to be capped
@@ -33,28 +22,8 @@ const LOG_FIELD_MAX_LENGTH = 64;
 const INVALID_PAYLOAD_LOG_INTERVAL_MS = 1000;
 const INVALID_PAYLOAD_LOG_BURST = 5;
 
-/** Truncate a client-controlled value before it reaches a log line. */
-function capForLog(value: unknown, max: number = LOG_FIELD_MAX_LENGTH): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  return value.length > max ? `${value.slice(0, max)}...(${value.length})` : value;
-}
-
-const CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE = -387_155_488;
-
-// Rate limiting whitelist - methods that are exempt from rate limiting
-const RATE_LIMIT_WHITELIST = new Set([
-  'changeTransferDirection',
-  'getRoomUsers',
-  'leaveRoom',
-  'cancelTransfer',
-]);
-
-const SUPPORTED_MESSAGE_TYPES: ReadonlySet<string> = new Set([
-  IJsBridgeMessageTypes.REQUEST,
-  IJsBridgeMessageTypes.RESPONSE,
-]);
+type IResponseEvent = 'e2ee-response' | 'e2ee-c2c-response';
+type IRequestEvent = 'e2ee-request' | 'e2ee-c2c-request';
 
 type IPayloadCheckResult =
   | { valid: true; payload: IJsBridgeMessagePayload }
@@ -77,8 +46,26 @@ function checkBridgePayload(
 
   const payload = raw as IJsBridgeMessagePayload;
 
-  if (!payload.type || !SUPPORTED_MESSAGE_TYPES.has(payload.type)) {
-    return { valid: false, reason: 'payload.type is missing or unsupported' };
+  const expectedType = requireMethod ? IJsBridgeMessageTypes.REQUEST : IJsBridgeMessageTypes.RESPONSE;
+  if (payload.type !== expectedType) {
+    return { valid: false, reason: 'payload.type does not match its event' };
+  }
+  if ((!requireMethod && payload.id === undefined) || (payload.id !== undefined &&
+    !(typeof payload.id === 'number' && Number.isSafeInteger(payload.id)))) {
+    return { valid: false, reason: 'payload.id is invalid' };
+  }
+  for (const key of ['scope', 'peerOrigin', 'origin'] as const) {
+    const value = payload[key];
+    if (value !== undefined && (typeof value !== 'string' || value.length > 1024)) {
+      return { valid: false, reason: 'bridge metadata is invalid or too large' };
+    }
+  }
+
+  const remoteId = payload.remoteId;
+  if (remoteId !== undefined && remoteId !== null &&
+    !(typeof remoteId === 'string' && remoteId.length <= 1024) &&
+    !(typeof remoteId === 'number' && Number.isFinite(remoteId))) {
+    return { valid: false, reason: 'payload.remoteId is invalid' };
   }
 
   if (requireMethod) {
@@ -94,26 +81,24 @@ function checkBridgePayload(
 export class JsBridgeE2EEServer extends JsBridgeBase {
   constructor(
     config: IJsBridgeConfig,
-    { socketClient }: { socketClient: Socket },
+    {
+      socketClient,
+      roomManager,
+    }: { socketClient: Socket; roomManager: RoomManager },
   ) {
     super(config);
     this.socketClient = socketClient;
+    this.roomManager = roomManager;
     this.setup();
   }
 
   private socketClient: Socket;
 
-  /**
-   * Rate limit state, scoped to this connection rather than kept in a
-   * module-level map that lived for the lifetime of the process.
-   *
-   * Cleared explicitly on disconnect rather than left to GC: JsBridgeBase
-   * instances are currently retained for the lifetime of the process, so
-   * anything hanging off them has to be released by hand. For the same reason
-   * this is a plain Map - a structure that preallocates would turn into a
-   * fixed cost per connection.
-   */
-  private rateLimitState = new Map<string, number>();
+  private roomManager: RoomManager;
+
+  private readonly requestLimits = new RequestRateLimiter();
+
+  private readonly relayTraffic = new RelayTrafficBudget();
 
   private invalidPayloadLogWindowStart = 0;
 
@@ -124,13 +109,47 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
   override sendAsString = false;
 
   sendPayload(payload: IJsBridgeMessagePayload | string): void {
+    this.emitResponse('e2ee-response', payload);
+  }
+
+  private emitResponse(
+    eventName: IResponseEvent,
+    payload: IJsBridgeMessagePayload | string,
+  ): void {
     const p = payload as IJsBridgeMessagePayload;
-    const e = p?.error as { message: string; code: number } | undefined;
-    if (e && e?.code && e?.code === CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE) {
-      this.socketClient.emit('e2ee-c2c-response', payload);
-      return;
+    // The bridge copies errors into plain objects before reaching this exit,
+    // so E2eeError.toJSON() alone cannot keep server stacks off the socket.
+    if (p?.error && typeof p.error === 'object') {
+      delete (p.error as { stack?: string }).stack;
     }
-    this.socketClient.emit('e2ee-response', payload);
+    this.socketClient.emit(eventName, payload);
+  }
+
+  private sendRequestError(
+    eventName: IRequestEvent,
+    payload: IJsBridgeMessagePayload,
+    error: E2eeError,
+  ): void {
+    if (payload.id === undefined) return;
+    // C2S and C2C bridges allocate IDs independently. Carry the response channel
+    // alongside this request instead of inferring it from an ID or error code.
+    // Match JsBridgeBase.responseError's wire envelope without its C2S egress.
+    this.emitResponse(
+      eventName === 'e2ee-c2c-request' ? 'e2ee-c2c-response' : 'e2ee-response',
+      this.buildErrorResponse(payload, error),
+    );
+  }
+
+  private buildErrorResponse(payload: IJsBridgeMessagePayload, error: E2eeError): IJsBridgeMessagePayload {
+    return {
+      id: payload.id,
+      type: IJsBridgeMessageTypes.RESPONSE,
+      origin: '',
+      scope: payload.scope,
+      remoteId: payload.remoteId,
+      peerOrigin: payload.peerOrigin,
+      error: error.toJSON(),
+    };
   }
 
   /**
@@ -243,83 +262,29 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     eventName: string;
     sendErrorResponse: () => void;
   }) {
-    // Rate limiting check
-    const req = payload?.data as IJsonRpcRequest | undefined;
-    const method = typeof req?.method === 'string' ? req.method : '';
-
-    // Check if method is in whitelist
-    if (RATE_LIMIT_WHITELIST.has(method)) {
-      return false;
-    }
-
-    // no socket id in the key: the map already belongs to this connection
-    const rateLimitKey = `${eventName}:${method}`;
-
-    const now = Date.now();
-    const lastTime = this.rateLimitState.get(rateLimitKey);
-
-    if (lastTime !== undefined && now - lastTime < RATE_LIMIT_INTERVAL_MS) {
-      sendErrorResponse();
-      return true;
-    }
-
-    if (
-      lastTime === undefined &&
-      this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS
-    ) {
-      this.pruneRateLimitState(now);
-
-      if (this.rateLimitState.size >= RATE_LIMIT_MAX_TRACKED_METHODS) {
-        // Every tracked window is still live, so this connection is flooding
-        // distinct method names. Refuse to track a new one and treat it as
-        // limited: the flood throttles itself and the existing windows - the
-        // expensive calls it is trying to reset - stay intact.
-        logger.debug(
-          { socketId: this.socketClient.id },
-          'jsBridge.rateLimitCapacityReached',
-        );
-        sendErrorResponse();
-        return true;
-      }
-    }
-
-    this.rateLimitState.set(rateLimitKey, now);
-    return false;
+    const req = payload.data as IJsonRpcRequest | undefined;
+    if (!this.requestLimits.isLimited(eventName, req?.method ?? '')) return false;
+    sendErrorResponse();
+    return true;
   }
 
-  /**
-   * Reclaim entries whose window has already passed - they cannot rate limit
-   * anything any more.
-   *
-   * This only ever drops expired entries. Live windows are never touched: since
-   * `method` is client-controlled, wiping the map on a flood would let the
-   * flooder reset the windows of the calls it was just blocked on, turning the
-   * bound into a rate-limit bypass.
-   */
-  private pruneRateLimitState(now: number): void {
-    for (const [key, time] of this.rateLimitState) {
-      if (now - time >= RATE_LIMIT_INTERVAL_MS) {
-        this.rateLimitState.delete(key);
-      }
-    }
-  }
-
-  private buildRateLimitResponder(payload: IJsBridgeMessagePayload) {
+  private buildRateLimitResponder(
+    eventName: IRequestEvent,
+    payload: IJsBridgeMessagePayload,
+  ) {
     return () => {
       logger.debug(
         { socketId: this.socketClient.id },
         'jsBridge.rateLimitExceeded',
       );
-      this.responseError({
-        id: payload.id || -9999,
-        error: new E2eeError(
+      this.sendRequestError(
+        eventName,
+        payload,
+        new E2eeError(
           E2eeErrorCode.RATE_LIMIT_EXCEEDED,
           'Rate limit, please try again later',
         ),
-        scope: payload.scope,
-        remoteId: payload.remoteId,
-        peerOrigin: payload.peerOrigin,
-      });
+      );
     };
   }
 
@@ -327,7 +292,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     // JsBridgeBase instances outlive their socket, so per-connection state is
     // released explicitly rather than left for GC to reclaim
     this.socketClient.on('disconnect', () => {
-      this.rateLimitState.clear();
+      this.requestLimits.clear();
     });
 
     this.socketClient.on(
@@ -343,7 +308,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         const isRateLimited = this.checkIsRateLimited({
           payload: p,
           eventName: 'e2ee-request',
-          sendErrorResponse: this.buildRateLimitResponder(p),
+          sendErrorResponse: this.buildRateLimitResponder('e2ee-request', p),
         });
 
         if (isRateLimited) {
@@ -360,6 +325,8 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     this.socketClient.on(
       'e2ee-c2c-request',
       this.safeHandler<unknown>('e2ee-c2c-request', (raw) => {
+        const traffic = this.checkRelayTraffic(raw, false);
+        if (traffic.disconnected) return;
         const envelope = this.checkC2cEnvelope('e2ee-c2c-request', raw, {
           requireMethod: true,
         });
@@ -367,17 +334,26 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
           return;
         }
         const { payload: p, roomId } = envelope;
+        const request = p.data as IJsonRpcRequest;
+        if (traffic.bytes === undefined || (request.method === 'sendTransferChunk' &&
+          (traffic.bytes > CHUNK_PACKET_BYTES || !isValidTransferChunk(request.params)))) {
+          this.sendRequestError('e2ee-c2c-request', p, new E2eeError(
+            E2eeErrorCode.INVALID_PARAMETER, 'Invalid transfer payload or packet size',
+          ));
+          return;
+        }
 
         const isRateLimited = this.checkIsRateLimited({
           payload: p,
           eventName: 'e2ee-c2c-request',
-          sendErrorResponse: this.buildRateLimitResponder(p),
+          sendErrorResponse: this.buildRateLimitResponder('e2ee-c2c-request', p),
         });
 
         if (isRateLimited) {
           return;
         }
 
+        this.roomManager.updateRoomActivity(roomId);
         this.socketClient.to(roomId).emit('e2ee-c2c-request', p);
       }),
     );
@@ -385,7 +361,9 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     this.socketClient.on(
       'e2ee-c2c-response',
       this.safeHandler<unknown>('e2ee-c2c-response', (raw) => {
-        // a response carries a result rather than a method, so `method` is not required
+        const traffic = this.checkRelayTraffic(raw, true);
+        if (traffic.disconnected) return;
+        // A response carries a result rather than a method.
         const envelope = this.checkC2cEnvelope('e2ee-c2c-response', raw, {
           requireMethod: false,
         });
@@ -394,9 +372,33 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         }
         const { payload: p, roomId } = envelope;
 
+        if (traffic.bytes === undefined || traffic.bytes > RESPONSE_PACKET_BYTES) {
+          // Complete the original caller's RPC with a small error. Never send
+          // a response back to the responder or relay its oversized error body.
+          this.socketClient.to(roomId).emit('e2ee-c2c-response', this.buildErrorResponse(
+            p, new E2eeError(E2eeErrorCode.INVALID_PARAMETER, 'Peer response exceeds relay limits'),
+          ));
+          return;
+        }
+
+        this.roomManager.updateRoomActivity(roomId);
         this.socketClient.to(roomId).emit('e2ee-c2c-response', p);
       }),
     );
+  }
+
+  private checkRelayTraffic(raw: unknown, response: boolean): { disconnected: boolean; bytes?: number } {
+    const packetLimit = this.roomManager.maxMessageSize;
+    const bytes = raw === undefined ? 0 : measureJsonBytes(raw, packetLimit);
+    if (!this.relayTraffic.consume(
+      bytes ?? packetLimit, response, Math.max(RELAY_BYTES_PER_SECOND, packetLimit),
+    )) {
+      // Stop parsing and responding to a sustained flood on this connection.
+      this.socketClient.disconnect(true);
+      return { disconnected: true };
+    }
+    if (bytes === undefined) this.logInvalidPayload('relay', raw, 'packet exceeds JSON limits');
+    return { disconnected: false, bytes };
   }
 
   /**
@@ -427,6 +429,19 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     const checked = checkBridgePayload(payload, { requireMethod });
     if (!checked.valid) {
       this.logInvalidPayload(eventName, payload, checked.reason);
+      return undefined;
+    }
+
+    // `socket.to(roomId)` is a delivery operator: it reads the membership of the
+    // recipients and never checks the sender's. Without this, any connected
+    // socket that knows a roomId can inject client-to-client calls into a room
+    // it never joined - bypassing the room-slot invariant the pairing flow
+    // relies on. Membership is authoritative in RoomManager, so ask it.
+    if (
+      !this.socketClient.rooms.has(roomId) ||
+      !this.roomManager.isUserInRoom(roomId, this.socketClient.id).isInRoom
+    ) {
+      this.logInvalidPayload(eventName, payload, 'sender is not a room member');
       return undefined;
     }
 

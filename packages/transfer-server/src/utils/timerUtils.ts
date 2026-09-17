@@ -47,7 +47,6 @@ const timeout = <T>(p: Promise<T>, ms: number, message?: string) =>
     p.then((value) => resolve(value)).catch((err) => reject(err));
   });
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const sleepUntil = ({
   conditionFn,
   until,

@@ -49,7 +49,6 @@ The server can be configured using environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3868` | Server listening port |
-| `CORS_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
 | `MAX_USERS_PER_ROOM` | `2` | Maximum users allowed per room |
 | `ROOM_TIMEOUT` | `3600000` | Room timeout in milliseconds (1 hour) |
 | `MAX_MESSAGE_SIZE` | `10485760` | Maximum message size in bytes (10MB) |
@@ -57,7 +56,6 @@ The server can be configured using environment variables:
 Example `.env` file:
 ```env
 PORT=3868
-CORS_ORIGINS=http://localhost:3000,https://app.onekey.so
 MAX_USERS_PER_ROOM=2
 ROOM_TIMEOUT=3600000
 MAX_MESSAGE_SIZE=10485760
@@ -67,37 +65,114 @@ MAX_MESSAGE_SIZE=10485760
 
 ### Socket.IO Events
 
-#### Client → Server Events
+Room methods use the bridge request event, not separate `create-room` or
+`join-room` events. A request payload contains `id`, `type: "REQUEST"`, and
+`data: { module, method, params }`. Responses preserve correlation fields and
+contain `type: "RESPONSE"` with `data` or `error: { name, message, code }`.
+Optional string metadata (`origin`, `peerOrigin`, `scope`) is limited to 1024 characters.
+`remoteId` accepts null, finite numbers, or strings up to 1024 characters.
+Request IDs, when supplied, and response IDs are safe integers.
 
-| Event | Description | Payload |
-|-------|-------------|---------|
-| `create-room` | Create a new room | `{ roomId?: string, metadata?: object }` |
-| `join-room` | Join an existing room | `{ roomId: string, userId?: string }` |
-| `send-encrypted-data` | Send encrypted data to room members | `{ data: any, targetUserId?: string }` |
-| `leave-room` | Leave the current room | `{ roomId: string }` |
-| `get-room-status` | Get room information | `{ roomId: string }` |
-| `get-room-list` | Get list of available rooms | `{}` |
+| Direction | Event | Payload |
+| --- | --- | --- |
+| Client → server | `e2ee-request` | Bridge request; module `roomManager` |
+| Server → client | `e2ee-response` | Bridge response to the server API |
+| Client → server | `e2ee-c2c-request` | `{ roomId, payload: <bridge REQUEST> }` |
+| Client → server | `e2ee-c2c-response` | `{ roomId, payload: <bridge RESPONSE> }` |
+| Server → peer | `e2ee-c2c-request` | The unwrapped bridge REQUEST |
+| Server → peer | `e2ee-c2c-response` | The unwrapped bridge RESPONSE, or a relay rejection |
+| Server → existing members | `user-joined` | `{ roomId, userId, userCount }`; excludes the joiner |
+| Server → remaining members | `user-left` | `{ roomId, userId, userCount }` |
+| Server → room members | `room-full` | `{ roomId, userCount }` |
+| Server → room members | `start-transfer` | `{ roomId, fromUserId, toUserId, randomNumber }` |
 
-#### Server → Client Events
+The event and bridge type must match. Both relay directions require membership
+in Socket.IO and RoomManager. Authorized, accepted relay traffic renews room
+activity; rejected traffic does not. Rooms expire after `ROOM_TIMEOUT` of
+inactivity, checked every five minutes. Expiry emits the existing `user-left`
+event with `userCount: 0` and removes Socket.IO membership only for that room;
+other rooms on the connection remain usable. Leaving an already removed room is idempotent.
 
-| Event | Description | Payload |
-|-------|-------------|---------|
-| `room-created` | Room successfully created | `{ roomId: string, creatorId: string }` |
-| `room-joined` | Successfully joined room | `{ roomId: string, userId: string, users: string[] }` |
-| `user-joined` | Another user joined the room | `{ userId: string, users: string[] }` |
-| `user-left` | User left the room | `{ userId: string, users: string[] }` |
-| `encrypted-data` | Received encrypted data | `{ data: any, senderId: string }` |
-| `room-error` | Error occurred | `{ code: string, message: string }` |
-| `room-status` | Room status information | `{ roomId: string, users: User[], createdAt: number }` |
+### Room RPCs
+
+Use `data.module = "roomManager"`; `params` is an array of method arguments.
+
+| Method | First argument | Result |
+| --- | --- | --- |
+| `createRoom` | No arguments | `{ roomId, encryptionKey }` |
+| `joinRoom`, `joinRoomAfterCreate` | `{ roomId, appPlatform, appPlatformName, appVersion, appBuildNumber, appDeviceName }` | `{ success, userId, roomId, userCount, roomKey, chunkedTransferVersion: 1, maxMessageSize }` |
+| `getRoomUsers` | `{ roomId }` | User records ordered by join time, without socket IDs |
+| `leaveRoom` | `{ roomId, userId }` | `{ success, userCount, roomDestroyed }` |
+| `startTransfer` | `{ roomId, fromUserId, toUserId }` | Transfer direction, or undefined when cleared |
+
+`getRoomUsers` returns `[]` for both nonexistent rooms and non-members. This
+preserves legacy missing-room behavior without exposing room existence. It uses
+a per-connection token bucket of 10 requests, replenishing 5 requests/second.
+Joins reserve capacity while the adapter is pending and publish membership only
+after it succeeds; disconnects and failed joins release that reservation.
+Supplied join metadata must be strings: platform/version/build fields allow 64
+characters, platform display name 256, and device name 512. Missing legacy fields
+remain accepted. `maxMessageSize` advertises the deployment limit to new senders.
+
+### Chunk protocol v1 and relay limits
+
+Chunking requires the relay join result and the peer's `getTransferType` result
+to advertise `chunkedTransferVersion: 1`. Older clients/relays retain
+`sendTransferData` single-message transfers. A new sender must fall back when an
+old peer does not implement the capability method.
+
+| Limit | Value |
+| --- | --- |
+| Chunk data | 64 KiB Base64 ASCII (`params[0].data`) |
+| Complete chunk envelope | 72 KiB JSON UTF-8 bytes, including room ID, all extra fields and bridge metadata |
+| Transfer total | 64 MiB of encrypted Base64 wire data; not the original wallet data size |
+| Chunk indices | 0–1023 inclusive, derived from total bytes / chunk size |
+| Chunk requests | At most 512 per connection per one-second window |
+| Complete response envelope | 256 KiB JSON UTF-8 bytes |
+| Responses | At most 1024 per connection per one-second window |
+| Requests + responses | At most 1600 relay messages and 48 MiB per connection per one-second window |
+| Legacy single request | Existing `MAX_MESSAGE_SIZE`, 10 MiB by default |
+
+The byte budget covers 512 complete 72 KiB chunk envelopes (36 MiB), plus
+12 MiB for normal ACKs/control messages. Aggregate counts reserve control-message
+headroom in addition to chunk and response counts. The combined byte budget is at least `MAX_MESSAGE_SIZE` when a deployment
+explicitly raises that setting. Rejected relay traffic also consumes the shared
+budget. Malformed/binary/overly complex JSON is not forwarded (maximum depth 64,
+16384 visited values). Crossing the shared traffic or response-rate budget disconnects the abusive
+socket. Within the transport packet limit, a single oversized or overly complex
+response with valid metadata and membership becomes a small same-ID error for the original caller; its body is
+never relayed, and the responder is not sent another response. Rejected requests
+with a valid ID and membership receive `1001`; one-way requests receive no reply. Limits are per connection;
+production ingress must also bound connection counts and aggregate traffic.
+
+Chunk RPCs use module `api`: `beginChunkedTransfer({ transferId, totalBytes })`,
+`sendTransferChunk({ transferId, index, data })`, and
+`finishChunkedTransfer({ transferId })`. A chunk acknowledgement contains
+`{ transferId, index, receivedBytes }`. The relay validates chunk shape and packet
+size but does not assemble, decrypt, or maintain the transfer manifest. The App
+checks total size before starting and the receiver checks it again on begin.
+In a valid bridge request, invalid chunk parameters or packet size return `1001`; actual chunk throttling
+returns `1100`, on `e2ee-c2c-response`. The relay performs no automatic retries.
+Malformed bridge envelopes are discarded; response IDs are required.
+
+New senders check the 64 MiB total before beginning a chunk transfer. Legacy
+fallbacks check the complete encoded Socket.IO message before emitting wallet
+data, using the advertised `maxMessageSize` or the historical 10 MiB default
+when connected to an older relay. These total/message checks are independent
+of throughput limits; increasing `MAX_MESSAGE_SIZE` does not raise the chunked-transfer total.
+
+CORS reflects the requesting origin and retains `credentials: true` for browser
+clients using credentialed HTTP polling, even though this service does not use
+cookie authentication. CORS is not an authorization boundary.
 
 ### REST API Endpoints
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check endpoint |
-| `/stats` | GET | Server statistics |
-| `/rooms` | GET | List all active rooms |
-| `/rooms/:roomId` | GET | Get room details |
+| --- | --- | --- |
+| `/health` | GET | `{ message: "Health check OK: <ISO timestamp>" }` |
+
+There are no `/stats`, `/rooms`, or `/rooms/:roomId` handlers. Room operations
+use the RPC interface above.
 
 ## Architecture
 
@@ -127,16 +202,18 @@ MAX_MESSAGE_SIZE=10485760
 
 ### Built-in Security Features
 
-1. **Message Size Limits**: Prevents DoS attacks by limiting message sizes
+1. **Message and Traffic Limits**: Bounds per-connection relay size and throughput
 2. **Room Timeouts**: Automatic cleanup of inactive rooms
 3. **User Limits**: Configurable maximum users per room
-4. **CORS Protection**: Configurable CORS origins
-5. **Input Validation**: Automatic validation of all API inputs
+4. **Room Membership Enforcement**: Client-to-client messages are relayed only
+   for a sender that has actually joined the target room
+5. **Input Validation**: Bridge type, metadata, membership, and chunk validation
 
 ### Best Practices
 
 - Always use HTTPS in production
-- Configure CORS origins appropriately
+- Do not treat CORS as access control: it is deliberately permissive and
+  `Origin` is not the auth boundary here (see `corsOptions` in `src/server.ts`)
 - Implement rate limiting with a reverse proxy
 - Monitor room creation patterns for abuse
 - Use environment variables for sensitive configuration
@@ -189,25 +266,32 @@ yarn start        # Start production server
 ### Testing
 
 ```bash
-# Run tests (when implemented)
+# Build and run TCP smoke, crash logging, relay policy, and lifecycle tests
 yarn test
 
-# Run tests with coverage
-yarn test:coverage
+# Run the relay compatibility and lifecycle suite
+yarn test:compatibility
 ```
 
 ## Error Handling
 
-The server implements a comprehensive error handling system with specific error codes:
+Server-generated errors omit stack traces on the wire; server logs retain them.
+Peer errors are relayed as peer data.
 
-| Error Code | Description |
-|------------|-------------|
-| `ROOM_NOT_FOUND` | Requested room does not exist |
-| `ROOM_FULL` | Room has reached maximum capacity |
-| `UNAUTHORIZED` | User not authorized for this operation |
-| `INVALID_DATA` | Invalid data format or content |
-| `TIMEOUT` | Operation timed out |
-| `INTERNAL_ERROR` | Internal server error |
+| Code | Meaning |
+| --- | --- |
+| `1001` | Invalid parameter or chunk packet size; retrying unchanged input does not help |
+| `1002` | Operation failed, including a closed connection during join |
+| `1100` | Per-method or chunk rate limit |
+| `1700` | Missing server-side socket context |
+| `1701` | Invalid room ID |
+| `1702` | Room not found for room operations other than the privacy-preserving user query |
+| `1703` | Connection rejected because the room has no available slot |
+| `1704` | User not found |
+| `1705` | Socket is not in the room for an operation requiring membership |
+| `1706` | Transfer participants are not both room members |
+
+See `src/errors.ts` for the complete code list.
 
 ## Performance Optimization
 
@@ -257,11 +341,10 @@ module.exports = {
 curl http://localhost:3868/health
 ```
 
-### Server Statistics
+### Room Lifecycle
 
-```bash
-curl http://localhost:3868/stats
-```
+Monitor the structured `room.created`, `room.joined`, `room.left`, and
+`room.expiredCleaned` log events. There is no statistics HTTP endpoint.
 
 ## Troubleshooting
 
@@ -276,15 +359,18 @@ curl http://localhost:3868/stats
    ```
 
 2. **CORS Issues**
-   - Ensure `CORS_ORIGINS` environment variable is properly configured
-   - Check that client origin matches allowed origins
+   - CORS is intentionally permissive: every origin is accepted and there is no
+     allowlist to configure
+   - `Origin` is not the auth boundary here - access control is the out-of-band
+     pairing code plus the room membership check on the client-to-client relay.
+     See the comment on `corsOptions` in `src/server.ts` for why
 
 3. **Connection Timeouts**
    - Verify firewall settings
    - Check WebSocket support in reverse proxy configuration
 
 4. **Memory Leaks**
-   - Monitor room cleanup with `/stats` endpoint
+   - Monitor the structured `room.expiredCleaned` log events
    - Ensure `ROOM_TIMEOUT` is configured appropriately
 
 ## Contributing
