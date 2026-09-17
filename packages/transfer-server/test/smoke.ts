@@ -397,7 +397,8 @@ async function main(): Promise<void> {
     await clientA.call('roomManager', 'joinRoomAfterCreate', [
       { roomId: room.roomId, ...appInfo('A') },
     ]);
-    await clientB.call('roomManager', 'joinRoom', [{ roomId: room.roomId, ...appInfo('B') }]);
+    const joined = await clientB.call('roomManager', 'joinRoom', [{ roomId: room.roomId, ...appInfo('B') }]);
+    check(joined.chunkedTransferVersion === 1, 'relay advertises chunked transfer support');
 
     const usersBefore = await clientA.call('roomManager', 'getRoomUsers', [
       { roomId: room.roomId },
@@ -406,6 +407,53 @@ async function main(): Promise<void> {
 
     // --- baseline: peers can talk both ways before anything goes wrong ---
     await checkBidirectional(clientA, clientB, room.roomId, 'before');
+
+    // More than one chunk must pass the relay without the legacy 3 second limit.
+    const chunkStart = clientB.c2cRequests.length;
+    const chunkData = 'A'.repeat(64 * 1024);
+    for (let index = 0; index < 12; index += 1) {
+      clientA.socket.emit('e2ee-c2c-request', {
+        roomId: room.roomId,
+        payload: { id: 70000 + index, type: 'REQUEST', data: {
+          module: 'api', method: 'sendTransferChunk',
+          params: [{ transferId: 'smoke-chunks', index, data: chunkData }],
+        } },
+      });
+    }
+    await wait(500);
+    const chunks = clientB.c2cRequests.slice(chunkStart);
+    check(chunks.length === 12, 'consecutive 64 KiB chunks are forwarded', String(chunks.length));
+    check(chunks.every((packet, index) => packet.data.params[0].index === index && packet.data.params[0].data === chunkData), 'chunk contents and order remain intact');
+
+    const invalidStart = clientB.c2cRequests.length;
+    for (const params of [
+      [{ transferId: 'smoke-chunks', index: 0, data: chunkData + 'A' }],
+      [{ transferId: 'smoke-chunks', index: -1, data: 'AAAA' }],
+      [{ transferId: 'smoke-chunks', index: 0, data: 'AAAA', extra: 'large' }],
+      [{ transferId: 'smoke-chunks', index: 0, data: 'AAAA' }, 'extra'],
+      [{ transferId: 'smoke-chunks', index: 0, data: '????' }],
+    ]) {
+      clientA.socket.emit('e2ee-c2c-request', {
+        roomId: room.roomId,
+        payload: { id: 71000, type: 'REQUEST', data: { module: 'api', method: 'sendTransferChunk', params } },
+      });
+    }
+    await wait(300);
+    check(clientB.c2cRequests.length === invalidStart, 'oversized and malformed chunks never reach the peer');
+
+    await wait(1100);
+    const burstStart = clientB.c2cRequests.length;
+    for (let index = 0; index < 530; index += 1) {
+      clientA.socket.emit('e2ee-c2c-request', {
+        roomId: room.roomId,
+        payload: { id: 72000 + index, type: 'REQUEST', data: {
+          module: 'api', method: 'sendTransferChunk',
+          params: [{ transferId: 'smoke-burst', index, data: 'AAAA' }],
+        } },
+      });
+    }
+    await wait(500);
+    check(clientB.c2cRequests.length - burstStart === 512, 'chunk floods stay capped at 512 messages per second');
 
     // --- both clients attack every listener ---
     console.log(

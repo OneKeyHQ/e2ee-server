@@ -115,6 +115,10 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    */
   private rateLimitState = new Map<string, number>();
 
+  private chunkWindowStartedAt = 0;
+
+  private chunkRequestsInWindow = 0;
+
   private invalidPayloadLogWindowStart = 0;
 
   private invalidPayloadLogCount = 0;
@@ -246,6 +250,42 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     // Rate limiting check
     const req = payload?.data as IJsonRpcRequest | undefined;
     const method = typeof req?.method === 'string' ? req.method : '';
+
+    // Chunk RPCs are bounded by both message size and connection throughput.
+    // Keep the existing per-method limit for all other operations.
+    if (eventName === 'e2ee-c2c-request' && method === 'sendTransferChunk') {
+      const now = Date.now();
+      if (now - this.chunkWindowStartedAt >= 1000) {
+        this.chunkWindowStartedAt = now;
+        this.chunkRequestsInWindow = 0;
+      }
+      this.chunkRequestsInWindow += 1;
+      const params = req?.params;
+      const chunk = (Array.isArray(params) ? params[0] : undefined) as
+        | { data?: unknown; transferId?: unknown; index?: unknown }
+        | undefined;
+      if (
+        this.chunkRequestsInWindow > 512 ||
+        !Array.isArray(params) ||
+        params.length !== 1 ||
+        !chunk ||
+        Object.keys(chunk).length !== 3 ||
+        typeof chunk.transferId !== 'string' ||
+        !/^[a-zA-Z0-9-]{1,64}$/.test(chunk.transferId) ||
+        typeof chunk.index !== 'number' ||
+        !Number.isSafeInteger(chunk.index) ||
+        chunk.index < 0 ||
+        chunk.index >= 1024 ||
+        typeof chunk.data !== 'string' ||
+        chunk.data.length === 0 ||
+        chunk.data.length > 64 * 1024 ||
+        !/^[A-Za-z0-9+/]*={0,2}$/.test(chunk.data)
+      ) {
+        sendErrorResponse();
+        return true;
+      }
+      return false;
+    }
 
     // Check if method is in whitelist
     if (RATE_LIMIT_WHITELIST.has(method)) {

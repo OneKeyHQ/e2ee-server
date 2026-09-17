@@ -120,6 +120,7 @@ export class RoomManager {
     roomKey?: string;
     error?: string;
     userCount?: number;
+    chunkedTransferVersion?: number;
   }> {
     await timerUtils.wait(1000);
     if (!context) {
@@ -161,6 +162,7 @@ export class RoomManager {
           userId,
           roomId,
           roomKey: room.encryptionKey,
+          chunkedTransferVersion: 1,
           userCount: room.users.size,
         };
       }
@@ -192,6 +194,7 @@ export class RoomManager {
       roomId,
       userCount: room.users.size,
       roomKey: room.encryptionKey,
+      chunkedTransferVersion: 1,
     };
   }
 
