@@ -393,16 +393,97 @@ async function main(): Promise<void> {
     await clientA.call('roomManager', 'joinRoomAfterCreate', [
       { roomId: room.roomId, ...appInfo('A') },
     ]);
+    const joinedEvents: Array<{ roomId: string; userId: string; userCount: number }> = [];
+    let joinerNotified = false;
+    clientA.socket.on('user-joined', (event) => joinedEvents.push(event));
+    clientB.socket.on('user-joined', () => { joinerNotified = true; });
     const joined = await clientB.call('roomManager', 'joinRoom', [{ roomId: room.roomId, ...appInfo('B') }]);
     check(joined.chunkedTransferVersion === 1, 'relay advertises chunked transfer support');
 
+    // Reading on the notified socket also waits for its preceding join event.
     const usersBefore = await clientA.call('roomManager', 'getRoomUsers', [
       { roomId: room.roomId },
     ]);
+    check(
+      joinedEvents.length === 1 && joinedEvents[0].roomId === room.roomId &&
+      joinedEvents[0].userId === joined.userId && joinedEvents[0].userCount === 2,
+      'existing member receives the peer join event with room identity',
+    );
+    check(!joinerNotified, 'joining peer does not receive its own join event');
     check(usersBefore.length === 2, 'session established', `${usersBefore.length} users in room`);
 
     // --- baseline: peers can talk both ways before anything goes wrong ---
     await checkBidirectional(clientA, clientB, room.roomId, 'before');
+
+    // --- security: a socket that never joined the room must not be able to
+    //     inject c2c traffic into it. The relay emits to the client-supplied
+    //     roomId, so without a membership check any connected socket could push
+    //     cancelTransfer / verifyPairingCode / a forged response into a live
+    //     session it only knows the id of. The outsider knows room.roomId but
+    //     never called joinRoom, so both channels must be dropped, and the two
+    //     real members must be unaffected. ---
+    const outsider = makeClient('smoke-client-outsider');
+    await outsider.ready;
+    const injectToken = `inject-${Date.now()}`;
+    const seenBefore = {
+      aReq: clientA.c2cRequests.length,
+      bReq: clientB.c2cRequests.length,
+      aRes: clientA.c2cResponses.length,
+      bRes: clientB.c2cResponses.length,
+    };
+    outsider.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now(),
+        type: 'REQUEST',
+        data: { module: 'peer', method: `inject_${injectToken}`, params: [injectToken] },
+      },
+      roomId: room.roomId,
+    });
+    outsider.socket.emit('e2ee-c2c-response', {
+      payload: { id: Date.now(), type: 'RESPONSE', data: { result: injectToken } },
+      roomId: room.roomId,
+    });
+    outsider.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now() + 1,
+        type: 'REQUEST',
+        data: {
+          module: 'api', method: 'sendTransferChunk',
+          params: [{ transferId: 'outsider-chunk', index: 0, data: 'AAAA' }],
+        },
+      },
+      roomId: room.roomId,
+    });
+    await wait(1000);
+    const injected =
+      clientA.c2cRequests.length > seenBefore.aReq ||
+      clientB.c2cRequests.length > seenBefore.bReq ||
+      clientA.c2cResponses.length > seenBefore.aRes ||
+      clientB.c2cResponses.length > seenBefore.bRes;
+    check(
+      !injected,
+      'non-member cannot inject requests, responses, or transfer chunks',
+      injected ? 'INJECTED - membership check bypassed' : 'both channels dropped',
+    );
+    check((await health()) === 200, 'server alive after c2c injection attempt');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after injection attempt');
+
+    const privateRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+    const queryFlood = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+    check(queryFlood.error?.code === 1100, 'rapid room queries are rate limited');
+    check(queryFlood.error?.stack === undefined, 'rate limit errors omit server stacks');
+    await wait(900);
+    const missingRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: 'missing-room' }]);
+    check(
+      Boolean(privateRoom.error) && JSON.stringify(privateRoom.error) === JSON.stringify(missingRoom.error),
+      'private and missing rooms return identical errors to non-members',
+    );
+    for (let poll = 0; poll < 3; poll += 1) {
+      await wait(1000);
+      const users = await clientA.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+      check(!users.error && users.data?.length === 2, `one-second member poll ${poll + 1} succeeds`);
+    }
+    outsider.socket.disconnect();
 
     // More than one chunk must pass the relay without the legacy 3 second limit.
     const chunkStart = clientB.c2cRequests.length;
@@ -550,6 +631,29 @@ async function main(): Promise<void> {
     const stillWorks = await clientA.call('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
     check(stillWorks.length === 2, 'session unaffected by oversized-log flood');
     logFlooder.socket.disconnect();
+
+    // --- an error response must never carry the server stack trace. It cannot
+    //     be stopped by E2eeError.toJSON(): JsBridgeBase.createPayload()
+    //     replaces payload.error with its own plain copy first, and that copy
+    //     (toPlainError) reads err.stack straight off the instance. So it is
+    //     stripped in sendPayload(), and it has to stay stripped.
+    //     A fresh client keeps this off the rate-limit windows used above. ---
+    const errorProbe = makeClient('smoke-client-F');
+    await errorProbe.ready;
+    const errorPayload = await errorProbe.callRaw('roomManager', 'joinRoom', [
+      { roomId: 'not-a-valid-room-id', ...appInfo('F') },
+    ]);
+    check(
+      Boolean(errorPayload.error),
+      'invalid roomId is rejected with an error',
+      `code=${String(errorPayload.error?.code)}`,
+    );
+    check(
+      errorPayload.error?.stack === undefined,
+      'error response carries no server stack trace',
+      errorPayload.error?.stack ? 'LEAKED - server stack sent to client' : 'no stack field',
+    );
+    errorProbe.socket.disconnect();
 
     const clientC = makeClient('smoke-client-C');
     await clientC.ready;

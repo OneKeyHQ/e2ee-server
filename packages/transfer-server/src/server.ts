@@ -45,19 +45,6 @@ class E2EEServer {
   constructor() {
     this.config = {
       port: parseInt(process.env.PORT || '3868', 10),
-      corsOrigins: process.env.CORS_ORIGINS?.split(',') || [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:3868',
-        'null',
-        'chrome-extension://*',
-        'moz-extension://*',
-        'ws://*',
-        'wss://*',
-        'http://*',
-        'https://*',
-        '*',
-      ],
       roomConfig: {
         maxUsers: parseInt(process.env.MAX_USERS_PER_ROOM || '2', 10),
         roomTimeout: parseInt(process.env.ROOM_TIMEOUT || '3600000', 10), // 1 hour
@@ -74,17 +61,13 @@ class E2EEServer {
     this.setupMiddleware();
     this.setupRoutes();
 
+    // Native clients may omit Origin and desktop clients may send "null".
+    // Connections carry no cookie credentials; Origin is not authorization.
+    // Preserve the previous allow-all behavior, which never enforced its
+    // configured allowlist. Relay access is checked through room membership.
     this.corsOptions = {
-      origin: (origin, callback) => {
-        if (!origin || this.config.corsOrigins.includes(origin)) {
-          callback(null, true);
-        } else {
-          callback(null, true);
-          // callback(new Error('Invalid CORS request'));
-        }
-      },
+      origin: true,
       methods: ['GET', 'POST'],
-      credentials: true,
     };
 
     this.socketServer = new SocketIOServer<
