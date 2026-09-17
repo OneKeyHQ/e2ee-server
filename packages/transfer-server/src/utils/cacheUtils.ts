@@ -5,7 +5,6 @@ import cache from 'memoizee';
 export type IMemoizeeOptions = cache.Options<any>;
 
 export const memoizee: typeof cache = (f, options) => {
-  // eslint-disable-next-line @typescript-eslint/unbound-method
   let { normalizer } = options ?? {};
   if (!normalizer) {
     normalizer = (...args) => {

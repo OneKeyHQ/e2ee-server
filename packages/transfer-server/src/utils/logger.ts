@@ -13,7 +13,7 @@ const LOG_PRETTY =
 
 function createPrettyStream(): DestinationStream | undefined {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require, @typescript-eslint/no-unsafe-assignment
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- Load the optional development dependency lazily.
     const pretty = require('pino-pretty') as (
       options: Record<string, unknown>,
     ) => DestinationStream;

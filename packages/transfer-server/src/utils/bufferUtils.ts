@@ -1,5 +1,3 @@
-/* eslint-disable no-restricted-syntax */
-
 import {
   bytesToHex as bytesToHex0,
   hexToBytes,
@@ -17,7 +15,6 @@ function toBuffer(
 ): Buffer {
   if (isString(data)) {
     if (encoding === 'hex') {
-      // eslint-disable-next-line no-param-reassign
       data = hexUtils.stripHexPrefix(data);
     }
     // buffer from hex string in default

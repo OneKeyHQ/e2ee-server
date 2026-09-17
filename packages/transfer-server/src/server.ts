@@ -1,9 +1,7 @@
 // Must come first: installs browser-global shims that
 // @onekeyfe/cross-inpage-provider-core reads while its module is evaluated.
-// eslint-disable-next-line import/order, import/first
 import './utils/nodeCompat';
 // Then the crash guards, before any other module can throw at load time.
-// eslint-disable-next-line import/order, import/first
 import { markServerStarted } from './utils/processGuards';
 
 import { createServer } from 'http';
@@ -78,7 +76,6 @@ class E2EEServer {
 
     this.corsOptions = {
       origin: (origin, callback) => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         if (!origin || this.config.corsOrigins.includes(origin)) {
           callback(null, true);
         } else {
@@ -241,7 +238,7 @@ class E2EEServer {
   private getNetworkIPs(): string[] {
     const interfaces = networkInterfaces();
     const ips: string[] = [];
-    
+
     for (const name of Object.keys(interfaces)) {
       const netInterface = interfaces[name];
       if (netInterface) {
@@ -253,7 +250,7 @@ class E2EEServer {
         }
       }
     }
-    
+
     return ips;
   }
 
@@ -270,45 +267,45 @@ class E2EEServer {
 
     this.httpServer.listen(this.config.port, () => {
       const networkIPs = this.getNetworkIPs();
-      
+
       // Calculate padding for proper alignment (box width is 58 chars inside)
       const boxWidth = 58;
-      
+
       const portText = `🚀 Server started successfully`;
       const portLine = `║  ${portText}${' '.repeat(boxWidth - portText.length - 2)} ║`;
-      
+
       const portInfoText = `📡 Port: ${this.config.port}`;
       const portInfoLine = `║  ${portInfoText}${' '.repeat(boxWidth - portInfoText.length - 2)} ║`;
-      
+
       const usersText = `👥 Max room users: ${this.config.roomConfig.maxUsers}`;
       const usersLine = `║  ${usersText}${' '.repeat(boxWidth - usersText.length - 2)} ║`;
-      
+
       const timeoutMinutes = Math.floor(this.config.roomConfig.roomTimeout / 60_000);
       const timeoutText = `⏰ Room timeout: ${timeoutMinutes} minutes`;
       const timeoutLine = `║  ${timeoutText}${' '.repeat(boxWidth - timeoutText.length - 2)} ║`;
-      
+
       const localhostTitleText = `🏠 Localhost`;
       const localhostTitleLine = `║  ${localhostTitleText}${' '.repeat(boxWidth - localhostTitleText.length - 2)} ║`;
-      
+
       const localhostEndpointText = `  - endpoint: http://localhost:${this.config.port}`;
       const localhostEndpointLine = `║  ${localhostEndpointText}${' '.repeat(boxWidth - localhostEndpointText.length - 2)} ║`;
-      
+
       const localhostHealthText = `  - health: http://localhost:${this.config.port}/health`;
       const localhostHealthLine = `║  ${localhostHealthText}${' '.repeat(boxWidth - localhostHealthText.length - 2)} ║`;
-      
+
       const networkLines = networkIPs.map(ip => {
         const lanTitleText = `🔗 LAN (${ip})`;
         const lanTitleLine = `║  ${lanTitleText}${' '.repeat(boxWidth - lanTitleText.length - 2)} ║`;
-        
+
         const lanEndpointText = `  - endpoint: http://${ip}:${this.config.port}`;
         const lanEndpointLine = `║  ${lanEndpointText}${' '.repeat(boxWidth - lanEndpointText.length - 2)} ║`;
-        
+
         const lanHealthText = `  - health: http://${ip}:${this.config.port}/health`;
         const lanHealthLine = `║  ${lanHealthText}${' '.repeat(boxWidth - lanHealthText.length - 2)} ║`;
-        
+
         return `${lanTitleLine}\n${lanEndpointLine}\n${lanHealthLine}`;
       }).join('\n');
-      
+
       // human-readable banner; the structured startup event is logged below
       console.log(`
 ╔══════════════════════════════════════════════════════════╗

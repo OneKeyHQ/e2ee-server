@@ -1,5 +1,3 @@
-/* eslint-disable no-restricted-syntax */
-
 import { sortBy } from "lodash";
 
 import { e2eeApiMethod } from "./decorators/e2eeApiMethod";

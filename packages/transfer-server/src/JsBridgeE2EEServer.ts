@@ -1,4 +1,3 @@
-/* eslint-disable no-restricted-syntax */
 import { JsBridgeBase } from '@onekeyfe/cross-inpage-provider-core';
 import { IJsBridgeMessageTypes } from '@onekeyfe/cross-inpage-provider-types';
 

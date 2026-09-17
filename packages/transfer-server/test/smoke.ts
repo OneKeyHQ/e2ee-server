@@ -65,11 +65,9 @@ async function startServer(): Promise<ChildProcess> {
     if (server.exitCode !== null) {
       throw new Error(`server exited during startup:\n${output.join('')}`);
     }
-    // eslint-disable-next-line no-await-in-loop
     if ((await health()) === 200) {
       return server;
     }
-    // eslint-disable-next-line no-await-in-loop
     await wait(250);
   }
 
@@ -194,7 +192,6 @@ async function deliver(
           : (received?.data?.result as string);
       return carried === token;
     }
-    // eslint-disable-next-line no-await-in-loop
     await wait(100);
   }
   return false;
@@ -206,7 +203,6 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 3000): Promise<
     if (value !== undefined) {
       return value;
     }
-    // eslint-disable-next-line no-await-in-loop
     await wait(100);
   }
   return undefined;

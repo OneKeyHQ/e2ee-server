@@ -1,4 +1,3 @@
-/* eslint-disable no-restricted-syntax */
 import { E2eeError, E2eeErrorCode } from '../errors';
 function addSeparatorToString({
   str,

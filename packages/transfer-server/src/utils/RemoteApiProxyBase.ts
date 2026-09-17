@@ -1,21 +1,19 @@
-/* eslint-disable no-restricted-syntax */
-/* eslint-disable @typescript-eslint/no-unsafe-return,  @typescript-eslint/no-unsafe-member-access */
-
 import { isMethodAllowed } from '../decorators/e2eeApiMethod';
 import { E2eeError, E2eeErrorCode } from '../errors';
 
 import type { IRoomManagerContext } from '../roomManager';
 import type { IJsonRpcRequest } from '@onekeyfe/cross-inpage-provider-types';
 
-export function buildCallRemoteApiMethod<T extends IJsonRpcRequest>(
+export function buildCallRemoteApiMethod<
+  T extends IJsonRpcRequest & { module?: string },
+>(
   moduleGetter: (module: any) => Promise<any>,
   remoteApiType: 'e2eeServerApi',
   context: IRoomManagerContext,
 ) {
   return async function callRemoteApiMethod(message: T) {
     const { method, params = [] } = message;
-    // @ts-ignore
-    const module = message?.module as any;
+    const module = message?.module;
     if (!module) {
       throw new E2eeError(E2eeErrorCode.MODULE_REQUIRED, 'callRemoteApiMethod ERROR: module is required');
     }
@@ -29,10 +27,8 @@ export function buildCallRemoteApiMethod<T extends IJsonRpcRequest>(
         );
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       const result = await moduleInstance[method](
-        // @ts-ignore
-        ...[].concat(params as any[]),
+        ...(Array.isArray(params) ? params : [params]),
         context,
       );
       return result;
@@ -69,7 +65,6 @@ abstract class RemoteApiProxyBase {
 
   async callRemoteMethod(key: string, ...params: any[]) {
     this.checkEnvAvailable();
-    // eslint-disable-next-line @typescript-eslint/await-thenable
     await this.checkEnvAvailable();
 
     // make this method to promise, so that background won't crash if error occurs
