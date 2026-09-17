@@ -79,7 +79,8 @@ A Midway.js-based component for OneKey Prime synchronization functionality.
 
 ## Testing Approach
 
-- Both packages use Jest for testing
+- transfer-server uses ts-node smoke/crash scripts and the Node.js test runner
+- cloud-sync-server uses Jest
 - Test files are located in `test/` directories
 - Mock application available in `examples/mock-app/` for integration testing
 - Run individual package tests with `yarn workspace @onekeyhq/<package-name> test`

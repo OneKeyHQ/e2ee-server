@@ -63,16 +63,6 @@ export interface IRoom {
   maxUsers: number;
 }
 
-// Room list item
-export interface IRoomListItem {
-  roomId: string;
-  userCount: number;
-  maxUsers: number;
-  users: string[];
-  createdAt: string;
-  lastActivity: string;
-}
-
 // User information
 export interface IE2EESocketUserInfo {
   id: string;
@@ -83,14 +73,6 @@ export interface IE2EESocketUserInfo {
   appVersion: string;
   appBuildNumber: string;
   appDeviceName: string;
-}
-
-// Encrypted message structure
-export interface IEncryptedMessage {
-  encryptedData: string;
-  senderId: string;
-  timestamp: number;
-  roomId: string;
 }
 
 // Room configuration
@@ -104,13 +86,6 @@ export interface IRoomConfig {
 export interface IServerConfig {
   port: number;
   roomConfig: IRoomConfig;
-}
-
-// API response type
-export interface IApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
 }
 
 export interface IE2EEServerApi {

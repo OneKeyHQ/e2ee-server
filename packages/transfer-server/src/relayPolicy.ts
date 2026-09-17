@@ -3,18 +3,31 @@ export const TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
 export const TRANSFER_MAX_CHUNKS = Math.ceil(TRANSFER_MAX_BYTES / TRANSFER_CHUNK_BYTES);
 export const CHUNK_PACKET_BYTES = TRANSFER_CHUNK_BYTES + 8 * 1024;
 export const RESPONSE_PACKET_BYTES = 256 * 1024;
-export const RELAY_MESSAGES_PER_SECOND = 1024;
-export const RELAY_RESPONSES_PER_SECOND = 512;
-export const RELAY_BYTES_PER_SECOND = 32 * 1024 * 1024;
+export const CHUNK_REQUESTS_PER_SECOND = 512;
+export const RELAY_RESPONSES_PER_SECOND = CHUNK_REQUESTS_PER_SECOND * 2;
+export const RELAY_MESSAGES_PER_SECOND = CHUNK_REQUESTS_PER_SECOND + RELAY_RESPONSES_PER_SECOND + 64;
+// Full chunk envelopes need 36 MiB; reserve another 12 MiB for ACKs/control traffic.
+export const RELAY_BYTES_PER_SECOND = CHUNK_PACKET_BYTES * CHUNK_REQUESTS_PER_SECOND + 12 * 1024 * 1024;
 
 /** Count the entire JSON envelope without building another full packet string. */
 export function measureJsonBytes(value: unknown, limit: number): number | undefined {
   let bytes = 0;
   let nodes = 0;
   const addString = (text: string) => {
-    // Avoid escaping a large string when even its unescaped form cannot fit.
-    if (Buffer.byteLength(text) + bytes + 2 > limit) return false;
-    bytes += Buffer.byteLength(JSON.stringify(text));
+    // Count JSON escapes without allocating an escaped copy of legacy payloads.
+    bytes += Buffer.byteLength(text) + 2;
+    if (bytes > limit) return false;
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      if (code === 34 || code === 92) bytes += 1;
+      else if (code < 32) bytes += [8, 9, 10, 12, 13].includes(code) ? 1 : 5;
+      else if (code >= 0xd800 && code <= 0xdbff) {
+        const next = text.charCodeAt(index + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) index += 1;
+        else bytes += 3;
+      } else if (code >= 0xdc00 && code <= 0xdfff) bytes += 3;
+      if (bytes > limit) return false;
+    }
     return bytes <= limit;
   };
   const visit = (item: unknown, depth: number): boolean => {

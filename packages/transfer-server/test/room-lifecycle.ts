@@ -9,6 +9,7 @@ import { E2eeErrorCode } from '../src/errors';
 import { RoomManager } from '../src/roomManager';
 
 import type { Socket } from 'socket.io-client';
+import type { IRoom } from '../src/types';
 
 function deferred() {
   let resolve!: () => void;
@@ -48,7 +49,28 @@ test('room admission stays consistent across disconnects and asynchronous adapte
   const owner = await connect();
   const { roomId } = await manager.createRoom();
   const ownerJoin = await manager.joinRoom(params(roomId), owner.context);
+  assert.equal(ownerJoin.maxMessageSize, config.maxMessageSize);
   const users = () => manager.getRoomUsers({ roomId }, owner.context);
+
+  await t.test('join metadata is bounded before admission without rejecting absent legacy fields', async () => {
+    const peer = await connect();
+    for (const invalid of [
+      { appPlatform: 'A'.repeat(65) },
+      { appPlatformName: 'A'.repeat(257) },
+      { appVersion: 'A'.repeat(65) },
+      { appBuildNumber: 'A'.repeat(65) },
+      { appDeviceName: 'A'.repeat(513) },
+      { appDeviceName: 42 },
+    ]) {
+      await assert.rejects(manager.joinRoom(Object.assign(params(roomId), invalid), peer.context), { code: E2eeErrorCode.INVALID_PARAMETER });
+    }
+    assert.equal(peer.socket.rooms.has(roomId), false);
+    const legacyParams = params(roomId);
+    Reflect.deleteProperty(legacyParams, 'appDeviceName');
+    const joined = await manager.joinRoom(legacyParams, peer.context);
+    assert.equal(joined.success, true);
+    await manager.leaveRoom({ roomId, userId: joined.userId! }, peer.context);
+  });
 
   await t.test('disconnect during the pre-join delay never adds a member or emits joined', async () => {
     const peer = await connect();
@@ -130,5 +152,33 @@ test('room admission stays consistent across disconnects and asynchronous adapte
     await rejection;
     assert.deepEqual(await users(), []);
     assert.equal(peer.socket.rooms.has(roomId), false);
+  });
+
+  await t.test('expiry notifies legacy clients and removes only expired room membership', async () => {
+    const peer = await connect();
+    const expired = await manager.createRoom();
+    const [a, b] = await Promise.all([
+      manager.joinRoom(params(expired.roomId), owner.context),
+      manager.joinRoom(params(expired.roomId), peer.context),
+    ]);
+    const active = await manager.createRoom();
+    await manager.joinRoom(params(active.roomId), owner.context);
+    const rooms = Reflect.get(manager, 'rooms') as Map<string, IRoom>;
+    rooms.get(expired.roomId)!.lastActivity = new Date(0);
+    const left = (client: Socket) => new Promise<{ roomId: string; userCount: number }>((resolve) => client.once('user-left', resolve));
+    const notices = Promise.all([left(owner.client), left(peer.client)]);
+    const cleanup = Reflect.get(manager, 'cleanupExpiredRooms') as () => void;
+    cleanup.call(manager);
+    (await notices).forEach((notice) => assert.deepEqual(
+      { roomId: notice.roomId, userCount: notice.userCount }, { roomId: expired.roomId, userCount: 0 },
+    ));
+    assert.equal(owner.client.connected, true);
+    assert.equal(peer.client.connected, true);
+    assert.equal(owner.socket.rooms.has(expired.roomId), false);
+    assert.equal(peer.socket.rooms.has(expired.roomId), false);
+    assert.equal(owner.socket.rooms.has(active.roomId), true);
+    assert.equal(manager.isUserInRoom(active.roomId, owner.socket.id).isInRoom, true);
+    assert.deepEqual(await manager.leaveRoom({ roomId: expired.roomId, userId: a.userId! }, owner.context), { success: true, userCount: 0, roomDestroyed: true });
+    assert.equal((await manager.leaveRoom({ roomId: expired.roomId, userId: b.userId! }, peer.context)).success, true);
   });
 });

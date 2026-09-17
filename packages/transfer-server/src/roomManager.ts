@@ -12,6 +12,14 @@ import type { IE2EESocketUserInfo, IRoom, IRoomConfig } from "./types";
 
 const logger = createModuleLogger("roomManager");
 
+const JOIN_FIELD_LIMITS = {
+  appPlatform: 64,
+  appPlatformName: 256,
+  appVersion: 64,
+  appBuildNumber: 64,
+  appDeviceName: 512,
+} as const;
+
 export type IRoomManagerContext = {
   socketClient: Socket;
 };
@@ -140,7 +148,18 @@ export class RoomManager {
     error?: string;
     userCount?: number;
     chunkedTransferVersion?: number;
+    maxMessageSize?: number;
   }> {
+    if (!params || typeof params !== "object") {
+      throw new E2eeError(E2eeErrorCode.INVALID_PARAMETER, "Invalid room join parameters");
+    }
+    for (const key of Object.keys(JOIN_FIELD_LIMITS) as Array<keyof typeof JOIN_FIELD_LIMITS>) {
+      const value = params[key];
+      // Missing optional metadata remains compatible with older clients.
+      if (value !== undefined && (typeof value !== "string" || value.length > JOIN_FIELD_LIMITS[key])) {
+        throw new E2eeError(E2eeErrorCode.INVALID_PARAMETER, "Invalid room join metadata");
+      }
+    }
     await timerUtils.wait(1000);
     if (!context) {
       throw new E2eeError(
@@ -231,6 +250,7 @@ export class RoomManager {
       userCount: room.users.size,
       roomKey: room.encryptionKey,
       chunkedTransferVersion: 1,
+      maxMessageSize: this.config.maxMessageSize,
     };
   }
 
@@ -259,7 +279,9 @@ export class RoomManager {
     const { roomId, userId } = params;
     const room = this.rooms.get(roomId);
     if (!room) {
-      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
+      // Expiry notifications cause legacy clients to acknowledge with leaveRoom.
+      // Repeating an already completed departure must not reject that cleanup.
+      return { success: true, userCount: 0, roomDestroyed: true };
     }
 
     const socketValidation = this.isUserInRoom(
@@ -512,6 +534,16 @@ export class RoomManager {
 
       if (timeSinceActivity > this.config.roomTimeout) {
         this.rooms.delete(roomId);
+        if (room.users.size > 0) {
+          this.socketServer.to(roomId).emit("user-left", {
+            roomId,
+            userId: room.users.keys().next().value!,
+            userCount: 0,
+          });
+        }
+        // Keep other sessions on the same connection intact; remove only this
+        // room's delivery membership. Existing clients understand user-left.
+        this.socketServer.in(roomId).socketsLeave(roomId);
         cleanedCount += 1;
         logger.info({ roomId }, "room.expiredCleaned");
       }

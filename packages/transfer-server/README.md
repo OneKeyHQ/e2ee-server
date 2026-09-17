@@ -69,8 +69,9 @@ Room methods use the bridge request event, not separate `create-room` or
 `join-room` events. A request payload contains `id`, `type: "REQUEST"`, and
 `data: { module, method, params }`. Responses preserve correlation fields and
 contain `type: "RESPONSE"` with `data` or `error: { name, message, code }`.
-Optional bridge metadata (`origin`, `peerOrigin`, `scope`, `remoteId`) must be
-strings no longer than 1024 characters. IDs, when supplied, are safe integers.
+Optional string metadata (`origin`, `peerOrigin`, `scope`) is limited to 1024 characters.
+`remoteId` accepts null, finite numbers, or strings up to 1024 characters.
+Request IDs, when supplied, and response IDs are safe integers.
 
 | Direction | Event | Payload |
 | --- | --- | --- |
@@ -88,7 +89,9 @@ strings no longer than 1024 characters. IDs, when supplied, are safe integers.
 The event and bridge type must match. Both relay directions require membership
 in Socket.IO and RoomManager. Authorized, accepted relay traffic renews room
 activity; rejected traffic does not. Rooms expire after `ROOM_TIMEOUT` of
-inactivity, checked every five minutes.
+inactivity, checked every five minutes. Expiry emits the existing `user-left`
+event with `userCount: 0` and removes Socket.IO membership only for that room;
+other rooms on the connection remain usable. Leaving an already removed room is idempotent.
 
 ### Room RPCs
 
@@ -97,7 +100,7 @@ Use `data.module = "roomManager"`; `params` is an array of method arguments.
 | Method | First argument | Result |
 | --- | --- | --- |
 | `createRoom` | No arguments | `{ roomId, encryptionKey }` |
-| `joinRoom`, `joinRoomAfterCreate` | `{ roomId, appPlatform, appPlatformName, appVersion, appBuildNumber, appDeviceName }` | `{ success, userId, roomId, userCount, roomKey, chunkedTransferVersion: 1 }` |
+| `joinRoom`, `joinRoomAfterCreate` | `{ roomId, appPlatform, appPlatformName, appVersion, appBuildNumber, appDeviceName }` | `{ success, userId, roomId, userCount, roomKey, chunkedTransferVersion: 1, maxMessageSize }` |
 | `getRoomUsers` | `{ roomId }` | User records ordered by join time, without socket IDs |
 | `leaveRoom` | `{ roomId, userId }` | `{ success, userCount, roomDestroyed }` |
 | `startTransfer` | `{ roomId, fromUserId, toUserId }` | Transfer direction, or undefined when cleared |
@@ -107,6 +110,9 @@ preserves legacy missing-room behavior without exposing room existence. It uses
 a per-connection token bucket of 10 requests, replenishing 5 requests/second.
 Joins reserve capacity while the adapter is pending and publish membership only
 after it succeeds; disconnects and failed joins release that reservation.
+Supplied join metadata must be strings: platform/version/build fields allow 64
+characters, platform display name 256, and device name 512. Missing legacy fields
+remain accepted. `maxMessageSize` advertises the deployment limit to new senders.
 
 ### Chunk protocol v1 and relay limits
 
@@ -123,16 +129,20 @@ old peer does not implement the capability method.
 | Chunk indices | 0–1023 inclusive, derived from total bytes / chunk size |
 | Chunk requests | At most 512 per connection per one-second window |
 | Complete response envelope | 256 KiB JSON UTF-8 bytes |
-| Responses | At most 512 per connection per one-second window |
-| Requests + responses | At most 1024 relay messages and 32 MiB per connection per one-second window |
+| Responses | At most 1024 per connection per one-second window |
+| Requests + responses | At most 1600 relay messages and 48 MiB per connection per one-second window |
 | Legacy single request | Existing `MAX_MESSAGE_SIZE`, 10 MiB by default |
 
-The combined byte budget is at least `MAX_MESSAGE_SIZE` when a deployment
+The byte budget covers 512 complete 72 KiB chunk envelopes (36 MiB), plus
+12 MiB for normal ACKs/control messages. Aggregate counts reserve control-message
+headroom in addition to chunk and response counts. The combined byte budget is at least `MAX_MESSAGE_SIZE` when a deployment
 explicitly raises that setting. Rejected relay traffic also consumes the shared
 budget. Malformed/binary/overly complex JSON is not forwarded (maximum depth 64,
-16384 visited values). Crossing the shared budget, response rate, or response
-size limit disconnects the abusive socket; the peer receives the normal leave
-notification, with no response-to-response error loop. Limits are per connection;
+16384 visited values). Crossing the shared traffic or response-rate budget disconnects the abusive
+socket. Within the transport packet limit, a single oversized or overly complex
+response with valid metadata and membership becomes a small same-ID error for the original caller; its body is
+never relayed, and the responder is not sent another response. Rejected requests
+with a valid ID and membership receive `1001`; one-way requests receive no reply. Limits are per connection;
 production ingress must also bound connection counts and aggregate traffic.
 
 Chunk RPCs use module `api`: `beginChunkedTransfer({ transferId, totalBytes })`,
@@ -144,6 +154,12 @@ checks total size before starting and the receiver checks it again on begin.
 In a valid bridge request, invalid chunk parameters or packet size return `1001`; actual chunk throttling
 returns `1100`, on `e2ee-c2c-response`. The relay performs no automatic retries.
 Malformed bridge envelopes are discarded; response IDs are required.
+
+New senders check the 64 MiB total before beginning a chunk transfer. Legacy
+fallbacks check the complete encoded Socket.IO message before emitting wallet
+data, using the advertised `maxMessageSize` or the historical 10 MiB default
+when connected to an older relay. These total/message checks are independent
+of throughput limits; increasing `MAX_MESSAGE_SIZE` does not raise the chunked-transfer total.
 
 CORS reflects the requesting origin and retains `credentials: true` for browser
 clients using credentialed HTTP polling, even though this service does not use

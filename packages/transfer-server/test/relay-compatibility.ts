@@ -11,6 +11,7 @@ import { io } from 'socket.io-client';
 import { e2eeServerApiSetup } from '../src/e2eeServerApi';
 import { E2eeErrorCode } from '../src/errors';
 import { RoomManager } from '../src/roomManager';
+import { CHUNK_PACKET_BYTES, CHUNK_REQUESTS_PER_SECOND, RELAY_RESPONSES_PER_SECOND } from '../src/relayPolicy';
 
 import type { Socket } from 'socket.io-client';
 
@@ -18,7 +19,7 @@ type IPacket = {
   id: number;
   type: string;
   scope?: string;
-  remoteId?: string;
+  remoteId?: string | number | null;
   peerOrigin?: string;
   error?: { code: number; message: string; stack?: string };
   data?: unknown;
@@ -262,6 +263,91 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
     b.off('e2ee-c2c-response', collect);
   });
 
+  await t.test('512 full chunk envelopes plus manifest, finish and ACKs fit one traffic window', async () => {
+    advance(5000);
+    const replies: IPacket[] = [];
+    const chunks: number[] = [];
+    const collect = (packet: IPacket) => replies.push(packet);
+    const acknowledge = (packet: IPacket) => {
+      const rpc = packet.data as { method: string; params: Array<{ index: number }> };
+      if (rpc.method === 'sendTransferChunk') chunks.push(rpc.params[0].index);
+      b.emit('e2ee-c2c-response', { roomId, payload: { id: packet.id, type: 'RESPONSE', data: { accepted: true } } });
+    };
+    a.on('e2ee-c2c-response', collect);
+    b.on('e2ee-c2c-request', acknowledge);
+    try {
+      a.emit('e2ee-c2c-request', { roomId, payload: request('beginChunkedTransfer', [{ transferId: 'burst', totalBytes: 512 * 65536 }], 'api') });
+      for (let index = 0; index < CHUNK_REQUESTS_PER_SECOND; index += 1) {
+        const envelope = { roomId, payload: request('sendTransferChunk', [{ transferId: 'burst', index, data: 'A'.repeat(65536) }], 'api'), padding: '' };
+        envelope.padding = 'A'.repeat(CHUNK_PACKET_BYTES - Buffer.byteLength(JSON.stringify(envelope)));
+        a.emit('e2ee-c2c-request', envelope);
+      }
+      const finish = request('finishChunkedTransfer', [{ transferId: 'burst' }], 'api');
+      const done = receive(a, 'e2ee-c2c-response', finish.id);
+      a.emit('e2ee-c2c-request', { roomId, payload: finish });
+      await done;
+      assert.equal(chunks.length, CHUNK_REQUESTS_PER_SECOND);
+      assert.equal(replies.length, CHUNK_REQUESTS_PER_SECOND + 2);
+      assert.equal(replies.some((packet) => packet.error), false);
+      assert.equal(a.connected, true);
+      assert.equal(b.connected, true);
+    } finally {
+      a.off('e2ee-c2c-response', collect);
+      b.off('e2ee-c2c-request', acknowledge);
+    }
+  });
+
+  await t.test('string, numeric and null remote IDs preserve both RPC and relay envelopes', async () => {
+    advance(5000);
+    for (const remoteId of ['remote', 42, 1.5, null]) {
+      const packet = { ...request('getRoomUsers', [{ roomId }]), remoteId };
+      const response = receive(a, 'e2ee-response', packet.id);
+      a.emit('e2ee-request', packet);
+      assert.equal((await response).remoteId, remoteId);
+      await relay(a, b, roomId, 'e2ee-c2c-request', { ...request('cancelTransfer', [], 'api'), remoteId });
+      await relay(b, a, roomId, 'e2ee-c2c-response', { id: sequence++, type: 'RESPONSE', remoteId, data: true });
+    }
+  });
+
+  await t.test('one-way rejection never emits an uncorrelated response', async () => {
+    advance(5000);
+    const replies: IPacket[] = [];
+    const collect = (packet: IPacket) => replies.push(packet);
+    a.on('e2ee-response', collect);
+    a.on('e2ee-c2c-response', collect);
+    try {
+      a.emit('e2ee-c2c-request', { roomId, payload: { type: 'REQUEST', data: { module: 'api', method: 'sendTransferChunk', params: [] } } });
+      for (let index = 0; index < 11; index += 1) {
+        a.emit('e2ee-request', { type: 'REQUEST', data: { module: 'roomManager', method: 'getRoomUsers', params: [{ roomId }] } });
+      }
+      await barrier(a);
+      assert.equal(replies.length, 0);
+    } finally { a.off('e2ee-response', collect); a.off('e2ee-c2c-response', collect); }
+  });
+
+  await t.test('complex but correlatable packets return small errors only to the authorized caller', async () => {
+    advance(5000);
+    let extra: unknown = 'small';
+    for (let index = 0; index < 70; index += 1) extra = { nested: extra };
+    const packet = request('cancelTransfer', [], 'api');
+    const reply = receive(a, 'e2ee-c2c-response', packet.id);
+    a.emit('e2ee-c2c-request', { roomId, payload: packet, extra });
+    assert.equal((await reply).error?.code, E2eeErrorCode.INVALID_PARAMETER);
+    const responseId = sequence++;
+    const rejectedResponse = receive(a, 'e2ee-c2c-response', responseId);
+    b.emit('e2ee-c2c-response', { roomId, payload: { id: responseId, type: 'RESPONSE', data: extra } });
+    assert.equal((await rejectedResponse).error?.code, E2eeErrorCode.INVALID_PARAMETER);
+    const unauthorized: IPacket[] = [];
+    const collect = (value: IPacket) => unauthorized.push(value);
+    outsider.on('e2ee-c2c-response', collect);
+    outsider.emit('e2ee-c2c-request', { roomId, payload: request('cancelTransfer', [], 'api'), extra });
+    await barrier(outsider);
+    assert.equal(unauthorized.length, 0);
+    outsider.off('e2ee-c2c-response', collect);
+    assert.equal(a.connected, true);
+    assert.equal(b.connected, true);
+  });
+
   await t.test('legacy requests, transfer chunks, and peer responses each extend idle TTL', async () => {
     let lastAcceptedAt = now;
     const events: Array<[string, IPacket]> = [
@@ -335,7 +421,7 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
     });
   }
   for (const mode of ['oversized', 'flood'] as const) {
-    await t.test(`response ${mode} is bounded and closes only the abusive connection`, async () => {
+    await t.test(`response ${mode} is bounded without losing a recoverable RPC`, async () => {
       advance(5000);
       const [sender, recipient] = await Promise.all([connect(), connect()]);
       const created = await call(sender, 'createRoom');
@@ -345,15 +431,21 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
       const received: IPacket[] = [];
       recipient.on('e2ee-c2c-response', (packet: IPacket) => received.push(packet));
       const disconnected = new Promise<void>((resolve) => sender.once('disconnect', () => resolve()));
-      const count = mode === 'flood' ? 520 : 1;
+      const count = mode === 'flood' ? RELAY_RESPONSES_PER_SECOND + 8 : 1;
       for (let index = 0; index < count; index += 1) {
         sender.emit('e2ee-c2c-response', { roomId: isolatedRoom, payload: {
           id: sequence++, type: 'RESPONSE', data: mode === 'oversized' ? 'A'.repeat(300 * 1024) : 'synthetic-ack',
         } });
       }
-      await disconnected;
+      if (mode === 'flood') await disconnected;
+      else await barrier(sender);
       await barrier(recipient);
-      assert.equal(received.length, mode === 'flood' ? 512 : 0);
+      assert.equal(received.length, mode === 'flood' ? RELAY_RESPONSES_PER_SECOND : 1);
+      if (mode === 'oversized') {
+        assert.equal(sender.connected, true);
+        assert.equal(received[0].error?.code, E2eeErrorCode.INVALID_PARAMETER);
+        assert.ok(Buffer.byteLength(JSON.stringify(received[0])) < 1024);
+      }
       assert.equal(recipient.connected, true);
       assert.equal((await call(recipient, 'getRoomUsers', [{ roomId: isolatedRoom }])).error, undefined);
     });
