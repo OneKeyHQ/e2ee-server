@@ -10,7 +10,7 @@
     "dev": "nodemon src/server.ts",
     "clean": "rimraf dist",
     "test": "yarn build && ts-node --project test/tsconfig.json test/smoke.ts && ts-node --project test/tsconfig.json test/crash-logging.ts && yarn test:compatibility",
-    "test:compatibility": "TS_NODE_PROJECT=test/tsconfig.json node --require ts-node/register --test --test-force-exit test/relay-compatibility.ts",
+    "test:compatibility": "TS_NODE_PROJECT=test/tsconfig.json node --require ts-node/register --test --test-force-exit test/relay-compatibility.ts test/relay-policy.ts test/room-lifecycle.ts",
     "test:crash": "yarn build && ts-node --project test/tsconfig.json test/crash-logging.ts",
     "postinstall": "echo 'e2ee-server dependencies installed'",
     "lint": "eslint src test --max-warnings 0"

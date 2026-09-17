@@ -52,8 +52,8 @@ The transfer server is a Socket.IO-based real-time communication server with end
 - `utils/` - Utility functions for crypto, buffers, caching, etc.
 
 **Socket.IO Events:**
-- Client→Server: `create-room`, `join-room`, `send-encrypted-data`, `leave-room`, `get-room-status`, `get-room-list`
-- Server→Client: `room-created`, `room-joined`, `user-joined`, `user-left`, `encrypted-data`, `room-error`, `room-status`
+- Client→Server: `e2ee-request`, `e2ee-c2c-request`, `e2ee-c2c-response`
+- Server→Client: `e2ee-response`, `e2ee-c2c-request`, `e2ee-c2c-response`, `user-joined`, `user-left`, `room-full`, `start-transfer`
 
 **Configuration (via environment variables):**
 - `PORT` (default: 3868)

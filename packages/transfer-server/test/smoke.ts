@@ -471,8 +471,9 @@ async function main(): Promise<void> {
     const privateRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
     const missingRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: 'missing-room' }]);
     check(
-      Boolean(privateRoom.error) && JSON.stringify(privateRoom.error) === JSON.stringify(missingRoom.error),
-      'private and missing rooms return identical errors to non-members',
+      !privateRoom.error && !missingRoom.error &&
+      JSON.stringify(privateRoom.data) === "[]" && JSON.stringify(missingRoom.data) === "[]",
+      'private and missing rooms return identical empty lists to non-members',
     );
     const queryFlood = await Promise.all(Array.from({ length: 32 }, () =>
       outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]),

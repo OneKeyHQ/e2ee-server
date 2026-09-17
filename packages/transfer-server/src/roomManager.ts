@@ -3,7 +3,7 @@ import { sortBy } from "lodash";
 import { e2eeApiMethod } from "./decorators/e2eeApiMethod";
 import { E2eeError, E2eeErrorCode } from "./errors";
 import cryptoUtils from "./utils/cryptoUtils";
-import { createModuleLogger } from "./utils/logger";
+import { capForLog, createModuleLogger } from "./utils/logger";
 import stringUtils from "./utils/stringUtils";
 import timerUtils from "./utils/timerUtils";
 
@@ -20,6 +20,12 @@ export class RoomManager {
   private rooms: Map<string, IRoom> = new Map();
 
   private config: IRoomConfig;
+
+  private readonly pendingJoins = new WeakMap<IRoom, Set<Socket>>();
+
+  get maxMessageSize(): number {
+    return this.config.maxMessageSize;
+  }
 
   private socketServer: SocketIOServer;
 
@@ -154,71 +160,74 @@ export class RoomManager {
       throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
-    // Check if room is full
-    if (room.users.size >= room.maxUsers) {
-      this.socketServer.to(roomId).emit("room-full", {
-        roomId,
-        userCount: room.users.size,
-      });
-
-      throw new E2eeError(
-        E2eeErrorCode.CONNECTION_REJECTED,
-        "Connection Rejected"
-      );
+    const socket = context.socketClient;
+    if (!socket.connected) {
+      throw new E2eeError(E2eeErrorCode.OPERATION_FAILED, "Connection closed during room join");
     }
 
-    // Check if user is already in room (by socketId)
+    // Rejoining an existing membership is idempotent even when the room is full.
     for (const [userId, userInfo] of room.users) {
-      if (userInfo.socketId === socketId) {
-        return {
-          success: true,
-          userId,
-          roomId,
-          roomKey: room.encryptionKey,
-          chunkedTransferVersion: 1,
-          userCount: room.users.size,
-        };
-      }
+      if (userInfo.socketId === socketId) return this.buildJoinResult(room, userId);
+    }
+    const pending = this.pendingJoins.get(room) ?? new Set<Socket>();
+    this.pendingJoins.set(room, pending);
+    if (pending.has(socket)) {
+      throw new E2eeError(E2eeErrorCode.OPERATION_FAILED, "Room join already in progress");
+    }
+    if (room.users.size + pending.size >= room.maxUsers) {
+      this.socketServer.to(roomId).emit("room-full", { roomId, userCount: room.users.size });
+      throw new E2eeError(E2eeErrorCode.CONNECTION_REJECTED, "Connection Rejected");
     }
 
-    // Create new user
-    const userId = cryptoUtils.generateUserId();
-    const userInfo: IE2EESocketUserInfo = {
-      id: userId,
-      socketId,
-      joinedAt: new Date(),
-      appPlatformName: params.appPlatformName,
-      appVersion: params.appVersion,
-      appBuildNumber: params.appBuildNumber,
-      appPlatform: params.appPlatform,
-      appDeviceName: params.appDeviceName,
-    };
+    // Reserve capacity without exposing a member before the adapter commits.
+    // A disconnect releases the reservation even if an adapter is still pending.
+    pending.add(socket);
+    const releaseReservation = () => { pending.delete(socket); };
+    socket.once("disconnect", releaseReservation);
+    let addedUserId: string | undefined;
+    try {
+      await socket.join(roomId);
+      if (!socket.connected || this.rooms.get(roomId) !== room || !socket.rooms.has(roomId)) {
+        throw new E2eeError(E2eeErrorCode.OPERATION_FAILED, "Connection closed during room join");
+      }
+      const userId = cryptoUtils.generateUserId();
+      const userInfo: IE2EESocketUserInfo = {
+        id: userId,
+        socketId,
+        joinedAt: new Date(),
+        appPlatformName: params.appPlatformName,
+        appVersion: params.appVersion,
+        appBuildNumber: params.appBuildNumber,
+        appPlatform: params.appPlatform,
+        appDeviceName: params.appDeviceName,
+      };
+      room.users.set(userId, userInfo);
+      addedUserId = userId;
+      room.lastActivity = new Date();
+      logger.info({ userId, roomId, userCount: room.users.size }, "room.joined");
+      socket.to(roomId).emit("user-joined", { roomId, userId, userCount: room.users.size });
+      return this.buildJoinResult(room, userId);
+    } catch (error) {
+      if (addedUserId) room.users.delete(addedUserId);
+      // Some adapters can mutate their room set before rejecting join(). Do
+      // not leave delivery membership behind after a failed admission.
+      try {
+        await socket.leave(roomId);
+      } catch {
+        socket.disconnect(true);
+      }
+      throw error;
+    } finally {
+      releaseReservation();
+      socket.off("disconnect", releaseReservation);
+    }
+  }
 
-    room.users.set(userId, userInfo);
-    room.lastActivity = new Date();
-
-    logger.info({ userId, roomId, userCount: room.users.size }, "room.joined");
-
-    await context?.socketClient.join(roomId);
-
-    // Tell the members already in the room that someone joined. The server
-    // never pushed this before, so a peer that needed to know had to poll
-    // getRoomUsers instead - which is why that method carries a high call rate.
-    //
-    // Emitted from the joining socket rather than the server, so the joiner is
-    // excluded (it does not need to be told about itself), and only after
-    // join() resolves, so the membership the event describes is already in
-    // effect if a receiver immediately calls getRoomUsers.
-    context?.socketClient.to(roomId).emit("user-joined", {
-      roomId,
-      userId,
-      userCount: room.users.size,
-    });
-
+  private buildJoinResult(room: IRoom, userId: string) {
     return {
       success: true,
       userId,
-      roomId,
+      roomId: room.id,
       userCount: room.users.size,
       roomKey: room.encryptionKey,
       chunkedTransferVersion: 1,
@@ -339,34 +348,23 @@ export class RoomManager {
         "context is required"
       );
     }
-    logger.debug({ roomId }, "room.getRoomUsers");
+    logger.debug({ roomId: capForLog(roomId) }, "room.getRoomUsers");
 
-    // A room the caller cannot see must be indistinguishable from a room that
-    // does not exist. Returning [] for a missing room while throwing for a room
-    // the caller is not in turned this into a room existence oracle, previously
-    // exposed without a rate limit.
-    // isUserInRoom() already reports false for a missing room, so both cases
-    // fail here identically, with the same error code and message.
+    // Preserve the legacy missing-room result without revealing whether a
+    // room exists to non-members. Both cases expose the same empty list.
     const socketValidation = this.isUserInRoom(roomId, context.socketClient.id);
     if (!socketValidation.isInRoom) {
-      logger.debug(
-        { roomId, roomExists: this.rooms.has(roomId) },
-        "room.getRoomUsersDenied"
-      );
-      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
+      logger.debug({ roomId: capForLog(roomId) }, "room.getRoomUsersUnavailable");
+      return [];
     }
-
-    // isInRoom implies the room exists.
     const room = this.rooms.get(roomId);
-    if (!room) {
-      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
-    }
+    if (!room) return [];
 
     const users: IE2EESocketUserInfo[] = sortBy(
       Array.from(room.users.values()),
       (item) => item.joinedAt.getTime()
     );
-    logger.debug({ roomId, userCount: users.length }, "room.getRoomUsersResult");
+    logger.debug({ roomId: capForLog(roomId), userCount: users.length }, "room.getRoomUsersResult");
     return users.map((item) => ({
       ...item,
       socketId: undefined,

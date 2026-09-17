@@ -6,6 +6,12 @@ import type { DestinationStream, Logger } from 'pino';
 
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 
+/** Bound client-controlled log fields before synchronous output. */
+export function capForLog(value: unknown, max = 64): string | null {
+  if (typeof value !== 'string') return null;
+  return value.length > max ? `${value.slice(0, max)}...(${value.length})` : value;
+}
+
 // Pretty output is opt-in and only meant for local development:
 // `pino-pretty` is a devDependency and must never be a hard requirement at runtime.
 const LOG_PRETTY =

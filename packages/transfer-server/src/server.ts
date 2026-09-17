@@ -62,12 +62,14 @@ class E2EEServer {
     this.setupRoutes();
 
     // Native clients may omit Origin and desktop clients may send "null".
-    // Connections carry no cookie credentials; Origin is not authorization.
+    // Keep credentialed polling compatible even though this service uses no
+    // cookie authentication. Origin is not authorization.
     // Preserve the previous allow-all behavior, which never enforced its
     // configured allowlist. Relay access is checked through room membership.
     this.corsOptions = {
       origin: true,
       methods: ['GET', 'POST'],
+      credentials: true,
     };
 
     this.socketServer = new SocketIOServer<

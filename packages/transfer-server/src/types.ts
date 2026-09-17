@@ -4,46 +4,31 @@ import type { IJsBridgeMessagePayload } from '@onekeyfe/cross-inpage-provider-ty
 // Export error classes
 export { E2eeError, E2eeErrorCode } from './errors';
 
-// Socket.IO event type definitions
+// Client relay input wraps the bridge payload; peer output is unwrapped.
+export interface IRelayEnvelope {
+  roomId: string;
+  payload: IJsBridgeMessagePayload;
+}
+
 export interface IServerToClientEvents {
-  'room-created': (data: { roomId: string; encryptionKey: string }) => void;
-  'room-joined': (data: { roomId: string; userId: string }) => void;
-  // roomId is part of both payloads: a client multiplexes every room over one
-  // socket, so it needs to tell which room an event refers to. `user-left` has
-  // always been emitted with it - the declaration was simply out of date.
-  'user-joined': (data: {
+  'e2ee-response': (payload: IJsBridgeMessagePayload) => void;
+  'e2ee-c2c-request': (payload: IJsBridgeMessagePayload) => void;
+  'e2ee-c2c-response': (payload: IJsBridgeMessagePayload) => void;
+  'user-joined': (data: { roomId: string; userId: string; userCount: number }) => void;
+  'user-left': (data: { roomId: string; userId: string; userCount: number }) => void;
+  'room-full': (data: { roomId: string; userCount: number }) => void;
+  'start-transfer': (data: {
     roomId: string;
-    userId: string;
-    userCount: number;
+    fromUserId: string;
+    toUserId: string;
+    randomNumber: string;
   }) => void;
-  'user-left': (data: {
-    roomId: string;
-    userId: string;
-    userCount: number;
-  }) => void;
-  'encrypted-data': (data: {
-    encryptedData: string;
-    senderId: string;
-    timestamp: number;
-  }) => void;
-  'room-error': (data: { error: string }) => void;
-  'room-status': (data: { userCount: number; users: string[] }) => void;
-  'room-list': (data: { rooms: IRoomListItem[] }) => void;
 }
 
 export interface IClientToServerEvents {
-  'e2ee-request': (event: string, payload: IJsBridgeMessagePayload) => void;
-  'e2ee-response': (event: string, payload: unknown) => void;
-
-  'create-room': () => void;
-  'join-room': (data: { roomId: string; encryptionKey: string }) => void;
-  'send-encrypted-data': (data: {
-    roomId: string;
-    encryptedData: string;
-  }) => void;
-  'leave-room': (data: { roomId: string }) => void;
-  'get-room-status': (data: { roomId: string }) => void;
-  'get-room-list': () => void;
+  'e2ee-request': (payload: IJsBridgeMessagePayload) => void;
+  'e2ee-c2c-request': (envelope: IRelayEnvelope) => void;
+  'e2ee-c2c-response': (envelope: IRelayEnvelope) => void;
 }
 
 export interface IInterServerEvents {

@@ -60,11 +60,12 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
   const httpServer = createServer();
   // Keep transport heartbeats beyond the simulated timeline so these tests
   // isolate RoomManager's idle TTL rather than the client's ping deadline.
-  const socketServer = new Server(httpServer, { pingInterval: 3_600_000, pingTimeout: 3_600_000 });
+  const socketServer = new Server(httpServer, { pingInterval: 3_600_000, pingTimeout: 3_600_000, maxHttpBufferSize: 10 * 1024 * 1024 });
   const roomConfig = { maxUsers: 2, roomTimeout: ROOM_TIMEOUT, maxMessageSize: 10 * 1024 * 1024 };
   const manager = new RoomManager({ config: roomConfig, socketServer });
   socketServer.on('connection', (socketClient) => {
     e2eeServerApiSetup({ socketClient, roomManager: manager });
+    socketClient.on("disconnect", () => { void manager.leaveRoomBySocket(socketClient); });
     // A test-only barrier confirms all preceding synchronous relay handlers
     // ran, including intentionally silent drops. It changes no production API.
     socketClient.on('test-barrier', (ack: () => void) => ack());
@@ -149,8 +150,10 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
     assert.equal((await call(a, 'getRoomUsers', [{ roomId }])).error, undefined, 'one token refills every 200ms');
     const privateRoom = await call(outsider, 'getRoomUsers', [{ roomId }]);
     const missingRoom = await call(outsider, 'getRoomUsers', [{ roomId: 'missing-room' }]);
-    assert.equal(privateRoom.error?.code, E2eeErrorCode.ROOM_NOT_FOUND);
-    assert.deepEqual(privateRoom.error, missingRoom.error);
+    assert.equal(privateRoom.error, undefined);
+    assert.equal(missingRoom.error, undefined);
+    assert.deepEqual(privateRoom.data, []);
+    assert.deepEqual(privateRoom.data, missingRoom.data);
   });
 
   await t.test('concurrent C2S and rejected C2C requests with the same id keep separate error channels', async () => {
@@ -186,7 +189,7 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
         assert.equal(response.error?.stack, undefined);
       }
       assert.equal(replies[0].error?.code, E2eeErrorCode.INVALID_ROOM_ID);
-      assert.equal(replies[1].error?.code, E2eeErrorCode.RATE_LIMIT_EXCEEDED);
+      assert.equal(replies[1].error?.code, E2eeErrorCode.INVALID_PARAMETER);
       await barrier(a);
       assert.equal(c2sReplies.length, 1);
       assert.equal(c2cReplies.length, 1);
@@ -209,6 +212,54 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
     assert.equal(rejected.id, blocked.id);
     assert.equal(rejected.error?.code, E2eeErrorCode.RATE_LIMIT_EXCEEDED);
     assert.equal(rejected.error?.stack, undefined);
+  });
+
+  await t.test('all chunk envelope levels are bounded while valid maximum chunks and legacy payloads pass', async () => {
+    const padding = 'A'.repeat(9 * 1024 * 1024);
+    const seen: IPacket[] = [];
+    const collect = (packet: IPacket) => seen.push(packet);
+    b.on('e2ee-c2c-request', collect);
+    try {
+      for (const level of ['envelope', 'payload', 'rpc'] as const) {
+        advance(2000);
+        const packet = request('sendTransferChunk', [{ transferId: 'size-check', index: 0, data: 'AAAA' }], 'api');
+        const envelope = { roomId, payload: packet };
+        const target = level === 'envelope' ? envelope : level === 'payload' ? packet : packet.data;
+        Object.assign(target as object, { padding });
+        const response = receive(a, 'e2ee-c2c-response', packet.id);
+        a.emit('e2ee-c2c-request', envelope);
+        const rejected = await response;
+        assert.equal(rejected.error?.code, E2eeErrorCode.INVALID_PARAMETER);
+        assert.equal(rejected.error?.stack, undefined);
+      }
+      await barrier(b);
+      assert.equal(seen.length, 0, 'padding never reaches the peer');
+      advance(2000);
+      const maximum = request('sendTransferChunk', [{ transferId: 'size-check', index: 1023, data: 'A'.repeat(64 * 1024) }], 'api');
+      await relay(a, b, roomId, 'e2ee-c2c-request', maximum);
+      const outOfRange = request('sendTransferChunk', [{ transferId: 'size-check', index: 1024, data: 'AAAA' }], 'api');
+      const rangeReply = receive(a, 'e2ee-c2c-response', outOfRange.id);
+      a.emit('e2ee-c2c-request', { roomId, payload: outOfRange });
+      assert.equal((await rangeReply).error?.code, E2eeErrorCode.INVALID_PARAMETER);
+      advance(2000);
+      await relay(a, b, roomId, 'e2ee-c2c-request', request('sendTransferData', [{ rawData: padding }], 'api'));
+    } finally { b.off('e2ee-c2c-request', collect); }
+  });
+
+  await t.test('request and response events cannot exchange payload types', async () => {
+    advance(2000);
+    const seen: IPacket[] = [];
+    const collect = (packet: IPacket) => seen.push(packet);
+    b.on('e2ee-c2c-request', collect);
+    b.on('e2ee-c2c-response', collect);
+    a.emit('e2ee-c2c-response', { roomId, payload: request('sendTransferChunk', [{ index: 1024, data: 'AAAA', transferId: 'bypass' }], 'api') });
+    a.emit('e2ee-c2c-response', { roomId, payload: { type: 'RESPONSE', data: 'missing-id' } });
+    a.emit('e2ee-c2c-request', { roomId, payload: { ...request('cancelTransfer', [], 'api'), type: 'RESPONSE' } });
+    await barrier(a);
+    await barrier(b);
+    assert.equal(seen.length, 0);
+    b.off('e2ee-c2c-request', collect);
+    b.off('e2ee-c2c-response', collect);
   });
 
   await t.test('legacy requests, transfer chunks, and peer responses each extend idle TTL', async () => {
@@ -267,7 +318,8 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
             : { ...limited, id: sequence++ };
           const response = receive(sender, 'e2ee-c2c-response', packet.id);
           sender.emit('e2ee-c2c-request', { roomId, payload: packet });
-          assert.equal((await response).error?.code, E2eeErrorCode.RATE_LIMIT_EXCEEDED);
+          assert.equal((await response).error?.code, kind === 'invalid-chunk'
+            ? E2eeErrorCode.INVALID_PARAMETER : E2eeErrorCode.RATE_LIMIT_EXCEEDED);
         }
         await barrier(sender);
         await barrier(b);
@@ -282,4 +334,29 @@ test('relay compatibility over real Socket.IO with a controlled activity clock',
       }
     });
   }
+  for (const mode of ['oversized', 'flood'] as const) {
+    await t.test(`response ${mode} is bounded and closes only the abusive connection`, async () => {
+      advance(5000);
+      const [sender, recipient] = await Promise.all([connect(), connect()]);
+      const created = await call(sender, 'createRoom');
+      const isolatedRoom = (created.data as { roomId: string }).roomId;
+      await call(sender, 'joinRoomAfterCreate', [{ roomId: isolatedRoom, ...appInfo }]);
+      await call(recipient, 'joinRoom', [{ roomId: isolatedRoom, ...appInfo }]);
+      const received: IPacket[] = [];
+      recipient.on('e2ee-c2c-response', (packet: IPacket) => received.push(packet));
+      const disconnected = new Promise<void>((resolve) => sender.once('disconnect', () => resolve()));
+      const count = mode === 'flood' ? 520 : 1;
+      for (let index = 0; index < count; index += 1) {
+        sender.emit('e2ee-c2c-response', { roomId: isolatedRoom, payload: {
+          id: sequence++, type: 'RESPONSE', data: mode === 'oversized' ? 'A'.repeat(300 * 1024) : 'synthetic-ack',
+        } });
+      }
+      await disconnected;
+      await barrier(recipient);
+      assert.equal(received.length, mode === 'flood' ? 512 : 0);
+      assert.equal(recipient.connected, true);
+      assert.equal((await call(recipient, 'getRoomUsers', [{ roomId: isolatedRoom }])).error, undefined);
+    });
+  }
+
 });
