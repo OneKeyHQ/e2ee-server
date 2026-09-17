@@ -70,7 +70,7 @@ export class E2eeError extends Error {
   // .createPayload() replaces payload.error with its own plain copy
   // (toPlainError), reading err.stack off the instance directly, so toJSON()
   // never runs before a response is emitted. The stack is stripped at the
-  // single egress point instead - see JsBridgeE2EEServer.sendPayload(). This
+  // shared egress point instead - see JsBridgeE2EEServer.emitResponse(). This
   // stays as defence in depth for any path that serializes an E2eeError
   // directly. `stack` remains on the instance for server-side pino logging,
   // which also reads err.stack rather than going through toJSON.

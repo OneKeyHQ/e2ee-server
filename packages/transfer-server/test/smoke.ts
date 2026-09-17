@@ -469,15 +469,16 @@ async function main(): Promise<void> {
     await checkBidirectional(clientA, clientB, room.roomId, 'after injection attempt');
 
     const privateRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
-    const queryFlood = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
-    check(queryFlood.error?.code === 1100, 'rapid room queries are rate limited');
-    check(queryFlood.error?.stack === undefined, 'rate limit errors omit server stacks');
-    await wait(900);
     const missingRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: 'missing-room' }]);
     check(
       Boolean(privateRoom.error) && JSON.stringify(privateRoom.error) === JSON.stringify(missingRoom.error),
       'private and missing rooms return identical errors to non-members',
     );
+    const queryFlood = await Promise.all(Array.from({ length: 32 }, () =>
+      outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]),
+    ));
+    check(queryFlood.some((reply) => reply.error?.code === 1100), 'room queries exceeding the burst allowance are rate limited');
+    check(queryFlood.every((reply) => reply.error?.stack === undefined), 'rate limit errors omit server stacks');
     for (let poll = 0; poll < 3; poll += 1) {
       await wait(1000);
       const users = await clientA.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);

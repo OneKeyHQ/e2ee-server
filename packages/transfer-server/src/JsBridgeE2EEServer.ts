@@ -41,8 +41,6 @@ function capForLog(value: unknown, max: number = LOG_FIELD_MAX_LENGTH): string |
   return value.length > max ? `${value.slice(0, max)}...(${value.length})` : value;
 }
 
-const CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE = -387_155_488;
-
 // Rate limiting whitelist - methods that are exempt from rate limiting
 const RATE_LIMIT_WHITELIST = new Set([
   'changeTransferDirection',
@@ -50,38 +48,14 @@ const RATE_LIMIT_WHITELIST = new Set([
   'cancelTransfer',
 ]);
 
-/**
- * Per-method rate limit windows, overriding RATE_LIMIT_INTERVAL_MS.
- *
- * This table is for legitimate high-frequency callers that a shipped client
- * already depends on. It is not a way to opt out of rate limiting: a method
- * absent from here is limited at RATE_LIMIT_INTERVAL_MS, and that default is
- * the point - a newly added method is protected without anyone having to
- * remember to protect it.
- *
- * Adding an entry means stating, on that entry, which caller needs it, at what
- * frequency, and why the default window cannot serve it. An entry is a
- * compatibility shim and has a lifetime: remove it once its caller no longer
- * needs it, rather than leaving a permanent hole behind.
- *
- * A window also has to stay meaningfully below the caller's polling interval.
- * setInterval fixes the interval at which requests are *sent*; network latency
- * shifts every request by roughly the same amount, so it cancels out of the gap
- * the server observes, and only jitter moves that gap - in both directions. A
- * 1000ms window against a 1000ms poll therefore sits exactly on the threshold
- * rather than safely above it: measured over localhost, where latency is under
- * a millisecond and stable, timer drift alone still pushed one poll in 30 below
- * it and into a rejection.
- */
-const METHOD_RATE_LIMIT_INTERVAL_MS = new Map<string, number>([
-  // CLI, once per second for the whole pairing phase
-  // (ROOM_USERS_POLL_INTERVAL_MS in transfer-receiver-adapter.ts): it had no
-  // user-joined push to wait on, so it polls to notice a peer arriving. The
-  // default 3s window would reject two of every three polls. Remove this entry
-  // once the CLI consumes the user-joined event instead - the poll and this
-  // shim go together.
-  ['getRoomUsers', 800],
-]);
+// Shipped clients query during key derivation, immediately after pairing, and
+// independently from a one-second CLI poll. Allow those overlapping calls while
+// bounding sustained traffic; a minimum interval breaks otherwise valid pairing.
+const ROOM_USERS_RATE_LIMIT_CAPACITY = 10;
+const ROOM_USERS_RATE_LIMIT_REFILL_PER_MS = 5 / 1000;
+
+type IResponseEvent = 'e2ee-response' | 'e2ee-c2c-response';
+type IRequestEvent = 'e2ee-request' | 'e2ee-c2c-request';
 
 const SUPPORTED_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   IJsBridgeMessageTypes.REQUEST,
@@ -153,6 +127,8 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    */
   private rateLimitState = new Map<string, number>();
 
+  private roomUsersRateLimitState?: { tokens: number; updatedAt: number };
+
   private chunkWindowStartedAt = 0;
 
   private chunkRequestsInWindow = 0;
@@ -166,18 +142,42 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
   override sendAsString = false;
 
   sendPayload(payload: IJsBridgeMessagePayload | string): void {
+    this.emitResponse('e2ee-response', payload);
+  }
+
+  private emitResponse(
+    eventName: IResponseEvent,
+    payload: IJsBridgeMessagePayload | string,
+  ): void {
     const p = payload as IJsBridgeMessagePayload;
     // The bridge copies errors into plain objects before reaching this exit,
     // so E2eeError.toJSON() alone cannot keep server stacks off the socket.
     if (p?.error && typeof p.error === 'object') {
       delete (p.error as { stack?: string }).stack;
     }
-    const e = p?.error as { message: string; code: number } | undefined;
-    if (e && e?.code && e?.code === CLIENT_TO_CLIENT_RATE_LIMIT_ERROR_CODE) {
-      this.socketClient.emit('e2ee-c2c-response', payload);
-      return;
-    }
-    this.socketClient.emit('e2ee-response', payload);
+    this.socketClient.emit(eventName, payload);
+  }
+
+  private sendRequestError(
+    eventName: IRequestEvent,
+    payload: IJsBridgeMessagePayload,
+    error: E2eeError,
+  ): void {
+    // C2S and C2C bridges allocate IDs independently. Carry the response channel
+    // alongside this request instead of inferring it from an ID or error code.
+    // Match JsBridgeBase.responseError's wire envelope without its C2S egress.
+    this.emitResponse(
+      eventName === 'e2ee-c2c-request' ? 'e2ee-c2c-response' : 'e2ee-response',
+      {
+        id: payload.id,
+        type: IJsBridgeMessageTypes.RESPONSE,
+        origin: '',
+        scope: payload.scope,
+        remoteId: payload.remoteId,
+        peerOrigin: payload.peerOrigin,
+        error: error.toJSON(),
+      },
+    );
   }
 
   /**
@@ -294,6 +294,26 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     const req = payload?.data as IJsonRpcRequest | undefined;
     const method = typeof req?.method === 'string' ? req.method : '';
 
+    if (eventName === 'e2ee-request' && method === 'getRoomUsers') {
+      const now = Date.now();
+      const state = this.roomUsersRateLimitState;
+      const tokens = state
+        ? Math.min(
+            ROOM_USERS_RATE_LIMIT_CAPACITY,
+            state.tokens +
+              Math.max(0, now - state.updatedAt) *
+                ROOM_USERS_RATE_LIMIT_REFILL_PER_MS,
+          )
+        : ROOM_USERS_RATE_LIMIT_CAPACITY;
+      this.roomUsersRateLimitState = { tokens, updatedAt: now };
+      if (tokens < 1) {
+        sendErrorResponse();
+        return true;
+      }
+      this.roomUsersRateLimitState.tokens -= 1;
+      return false;
+    }
+
     // Chunk RPCs are bounded by both message size and connection throughput.
     // Keep the existing per-method limit for all other operations.
     if (eventName === 'e2ee-c2c-request' && method === 'sendTransferChunk') {
@@ -340,10 +360,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
 
     const now = Date.now();
     const lastTime = this.rateLimitState.get(rateLimitKey);
-    const interval =
-      METHOD_RATE_LIMIT_INTERVAL_MS.get(method) ?? RATE_LIMIT_INTERVAL_MS;
-
-    if (lastTime !== undefined && now - lastTime < interval) {
+    if (lastTime !== undefined && now - lastTime < RATE_LIMIT_INTERVAL_MS) {
       sendErrorResponse();
       return true;
     }
@@ -383,35 +400,29 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
    */
   private pruneRateLimitState(now: number): void {
     for (const [key, time] of this.rateLimitState) {
-      // Expire each entry against its own window, not the default one: a
-      // per-method window longer than the default would otherwise be dropped
-      // while still live, which is exactly the rate limit reset this function
-      // is written to prevent.
-      const method = key.slice(key.indexOf(':') + 1);
-      const interval =
-        METHOD_RATE_LIMIT_INTERVAL_MS.get(method) ?? RATE_LIMIT_INTERVAL_MS;
-      if (now - time >= interval) {
+      if (now - time >= RATE_LIMIT_INTERVAL_MS) {
         this.rateLimitState.delete(key);
       }
     }
   }
 
-  private buildRateLimitResponder(payload: IJsBridgeMessagePayload) {
+  private buildRateLimitResponder(
+    eventName: IRequestEvent,
+    payload: IJsBridgeMessagePayload,
+  ) {
     return () => {
       logger.debug(
         { socketId: this.socketClient.id },
         'jsBridge.rateLimitExceeded',
       );
-      this.responseError({
-        id: payload.id || -9999,
-        error: new E2eeError(
+      this.sendRequestError(
+        eventName,
+        payload,
+        new E2eeError(
           E2eeErrorCode.RATE_LIMIT_EXCEEDED,
           'Rate limit, please try again later',
         ),
-        scope: payload.scope,
-        remoteId: payload.remoteId,
-        peerOrigin: payload.peerOrigin,
-      });
+      );
     };
   }
 
@@ -420,6 +431,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
     // released explicitly rather than left for GC to reclaim
     this.socketClient.on('disconnect', () => {
       this.rateLimitState.clear();
+      this.roomUsersRateLimitState = undefined;
     });
 
     this.socketClient.on(
@@ -435,7 +447,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         const isRateLimited = this.checkIsRateLimited({
           payload: p,
           eventName: 'e2ee-request',
-          sendErrorResponse: this.buildRateLimitResponder(p),
+          sendErrorResponse: this.buildRateLimitResponder('e2ee-request', p),
         });
 
         if (isRateLimited) {
@@ -463,13 +475,14 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         const isRateLimited = this.checkIsRateLimited({
           payload: p,
           eventName: 'e2ee-c2c-request',
-          sendErrorResponse: this.buildRateLimitResponder(p),
+          sendErrorResponse: this.buildRateLimitResponder('e2ee-c2c-request', p),
         });
 
         if (isRateLimited) {
           return;
         }
 
+        this.roomManager.updateRoomActivity(roomId);
         this.socketClient.to(roomId).emit('e2ee-c2c-request', p);
       }),
     );
@@ -486,6 +499,7 @@ export class JsBridgeE2EEServer extends JsBridgeBase {
         }
         const { payload: p, roomId } = envelope;
 
+        this.roomManager.updateRoomActivity(roomId);
         this.socketClient.to(roomId).emit('e2ee-c2c-response', p);
       }),
     );
