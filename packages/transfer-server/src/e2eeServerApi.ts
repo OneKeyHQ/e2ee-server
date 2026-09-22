@@ -1,7 +1,3 @@
-/* eslint-disable prettier/prettier */
-/* eslint-disable no-restricted-syntax */
-/* eslint-disable new-cap */
-
 import { JsBridgeE2EEServer } from './JsBridgeE2EEServer';
 import { E2eeError, E2eeErrorCode } from './errors';
 import { memoizee } from './utils/cacheUtils';
@@ -61,15 +57,13 @@ function createBridgeE2EEServer({
       receiveHandler: async (payload) => {
         const req: IJsonRpcRequest = payload.data as IJsonRpcRequest;
 
-        // @ts-ignore
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         const result = await callE2EEServerApiMethod(req);
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return result;
       },
     },
     {
       socketClient,
+      roomManager,
     },
   );
 }

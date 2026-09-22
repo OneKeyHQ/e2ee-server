@@ -1,4 +1,3 @@
-/* eslint-disable no-restricted-syntax */
 import crypto from 'crypto';
 
 // TODO use node native module
@@ -246,7 +245,6 @@ export default class CryptoUtils {
 
     let result = 0;
     for (let i = 0; i < a.length; i += 1) {
-      // eslint-disable-next-line no-bitwise
       result |= a.charCodeAt(i) ^ b.charCodeAt(i);
     }
 

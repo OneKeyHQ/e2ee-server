@@ -133,7 +133,6 @@ Each package can be configured using environment variables. Create `.env` files 
 #### transfer-server
 ```env
 PORT=3868
-CORS_ORIGINS=http://localhost:3000
 MAX_USERS_PER_ROOM=2
 ROOM_TIMEOUT=3600000
 MAX_MESSAGE_SIZE=10485760
@@ -300,7 +299,8 @@ chore: Update dependencies
 - All sensitive configuration should use environment variables
 - Never commit `.env` files
 - Use HTTPS in production
-- Configure CORS appropriately
+- Do not treat CORS as access control in transfer-server: it is deliberately
+  permissive (see `corsOptions` in `packages/transfer-server/src/server.ts`)
 - Implement rate limiting
 - Regular dependency updates
 

@@ -1,11 +1,9 @@
-/* eslint-disable no-restricted-syntax */
-
 import { sortBy } from "lodash";
 
 import { e2eeApiMethod } from "./decorators/e2eeApiMethod";
 import { E2eeError, E2eeErrorCode } from "./errors";
 import cryptoUtils from "./utils/cryptoUtils";
-import { createModuleLogger } from "./utils/logger";
+import { capForLog, createModuleLogger } from "./utils/logger";
 import stringUtils from "./utils/stringUtils";
 import timerUtils from "./utils/timerUtils";
 
@@ -13,6 +11,14 @@ import type { Socket, Server as SocketIOServer } from "socket.io";
 import type { IE2EESocketUserInfo, IRoom, IRoomConfig } from "./types";
 
 const logger = createModuleLogger("roomManager");
+
+const JOIN_FIELD_LIMITS = {
+  appPlatform: 64,
+  appPlatformName: 256,
+  appVersion: 64,
+  appBuildNumber: 64,
+  appDeviceName: 512,
+} as const;
 
 export type IRoomManagerContext = {
   socketClient: Socket;
@@ -22,6 +28,12 @@ export class RoomManager {
   private rooms: Map<string, IRoom> = new Map();
 
   private config: IRoomConfig;
+
+  private readonly pendingJoins = new WeakMap<IRoom, Set<Socket>>();
+
+  get maxMessageSize(): number {
+    return this.config.maxMessageSize;
+  }
 
   private socketServer: SocketIOServer;
 
@@ -46,6 +58,16 @@ export class RoomManager {
   /**
    * Create new room
    * @returns Room information (room ID and encryption key)
+   *
+   * NOTE on `encryptionKey` (returned here and as `roomKey` from joinRoom):
+   * this key is NOT used by the OneKey client, and it is not what protects
+   * transferred data. The client derives its own end-to-end key locally from
+   * the pairing code shown in the QR code (only its roomId prefix reaches the
+   * server), an ECDHE shared secret negotiated between the devices, and the
+   * room's user list. The server knows the user list but not the pairing-code
+   * secret or the ECDHE shared secret. It never encrypts or decrypts payloads
+   * with this generated key - it only relays them. The field is
+   * kept for wire compatibility with existing clients.
    */
   @e2eeApiMethod()
   async createRoom(): Promise<{ roomId: string; encryptionKey: string }> {
@@ -101,6 +123,11 @@ export class RoomManager {
    * @param encryptionKey Encryption key
    * @param socketId User's Socket ID
    * @returns Join result
+   *
+   * The returned `roomKey` is server-generated and unused by the client - see
+   * the note on createRoom(). It is not part of the end-to-end encryption
+   * scheme; the client derives its own key from the pairing code and an ECDHE
+   * exchange this server is not party to.
    */
   @e2eeApiMethod()
   async joinRoom(
@@ -120,7 +147,19 @@ export class RoomManager {
     roomKey?: string;
     error?: string;
     userCount?: number;
+    chunkedTransferVersion?: number;
+    maxMessageSize?: number;
   }> {
+    if (!params || typeof params !== "object") {
+      throw new E2eeError(E2eeErrorCode.INVALID_PARAMETER, "Invalid room join parameters");
+    }
+    for (const key of Object.keys(JOIN_FIELD_LIMITS) as Array<keyof typeof JOIN_FIELD_LIMITS>) {
+      const value = params[key];
+      // Missing optional metadata remains compatible with older clients.
+      if (value !== undefined && (typeof value !== "string" || value.length > JOIN_FIELD_LIMITS[key])) {
+        throw new E2eeError(E2eeErrorCode.INVALID_PARAMETER, "Invalid room join metadata");
+      }
+    }
     await timerUtils.wait(1000);
     if (!context) {
       throw new E2eeError(
@@ -140,58 +179,78 @@ export class RoomManager {
       throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
     }
 
-    // Check if room is full
-    if (room.users.size >= room.maxUsers) {
-      this.socketServer.to(roomId).emit("room-full", {
-        roomId,
-        userCount: room.users.size,
-      });
-
-      throw new E2eeError(
-        E2eeErrorCode.CONNECTION_REJECTED,
-        "Connection Rejected"
-      );
+    const socket = context.socketClient;
+    if (!socket.connected) {
+      throw new E2eeError(E2eeErrorCode.OPERATION_FAILED, "Connection closed during room join");
     }
 
-    // Check if user is already in room (by socketId)
+    // Rejoining an existing membership is idempotent even when the room is full.
     for (const [userId, userInfo] of room.users) {
-      if (userInfo.socketId === socketId) {
-        return {
-          success: true,
-          userId,
-          roomId,
-          roomKey: room.encryptionKey,
-          userCount: room.users.size,
-        };
-      }
+      if (userInfo.socketId === socketId) return this.buildJoinResult(room, userId);
+    }
+    const pending = this.pendingJoins.get(room) ?? new Set<Socket>();
+    this.pendingJoins.set(room, pending);
+    if (pending.has(socket)) {
+      throw new E2eeError(E2eeErrorCode.OPERATION_FAILED, "Room join already in progress");
+    }
+    if (room.users.size + pending.size >= room.maxUsers) {
+      this.socketServer.to(roomId).emit("room-full", { roomId, userCount: room.users.size });
+      throw new E2eeError(E2eeErrorCode.CONNECTION_REJECTED, "Connection Rejected");
     }
 
-    // Create new user
-    const userId = cryptoUtils.generateUserId();
-    const userInfo: IE2EESocketUserInfo = {
-      id: userId,
-      socketId,
-      joinedAt: new Date(),
-      appPlatformName: params.appPlatformName,
-      appVersion: params.appVersion,
-      appBuildNumber: params.appBuildNumber,
-      appPlatform: params.appPlatform,
-      appDeviceName: params.appDeviceName,
-    };
+    // Reserve capacity without exposing a member before the adapter commits.
+    // A disconnect releases the reservation even if an adapter is still pending.
+    pending.add(socket);
+    const releaseReservation = () => { pending.delete(socket); };
+    socket.once("disconnect", releaseReservation);
+    let addedUserId: string | undefined;
+    try {
+      await socket.join(roomId);
+      if (!socket.connected || this.rooms.get(roomId) !== room || !socket.rooms.has(roomId)) {
+        throw new E2eeError(E2eeErrorCode.OPERATION_FAILED, "Connection closed during room join");
+      }
+      const userId = cryptoUtils.generateUserId();
+      const userInfo: IE2EESocketUserInfo = {
+        id: userId,
+        socketId,
+        joinedAt: new Date(),
+        appPlatformName: params.appPlatformName,
+        appVersion: params.appVersion,
+        appBuildNumber: params.appBuildNumber,
+        appPlatform: params.appPlatform,
+        appDeviceName: params.appDeviceName,
+      };
+      room.users.set(userId, userInfo);
+      addedUserId = userId;
+      room.lastActivity = new Date();
+      logger.info({ userId, roomId, userCount: room.users.size }, "room.joined");
+      socket.to(roomId).emit("user-joined", { roomId, userId, userCount: room.users.size });
+      return this.buildJoinResult(room, userId);
+    } catch (error) {
+      if (addedUserId) room.users.delete(addedUserId);
+      // Some adapters can mutate their room set before rejecting join(). Do
+      // not leave delivery membership behind after a failed admission.
+      try {
+        await socket.leave(roomId);
+      } catch {
+        socket.disconnect(true);
+      }
+      throw error;
+    } finally {
+      releaseReservation();
+      socket.off("disconnect", releaseReservation);
+    }
+  }
 
-    room.users.set(userId, userInfo);
-    room.lastActivity = new Date();
-
-    logger.info({ userId, roomId, userCount: room.users.size }, "room.joined");
-
-    await context?.socketClient.join(roomId);
-
+  private buildJoinResult(room: IRoom, userId: string) {
     return {
       success: true,
       userId,
-      roomId,
+      roomId: room.id,
       userCount: room.users.size,
       roomKey: room.encryptionKey,
+      chunkedTransferVersion: 1,
+      maxMessageSize: this.config.maxMessageSize,
     };
   }
 
@@ -220,7 +279,9 @@ export class RoomManager {
     const { roomId, userId } = params;
     const room = this.rooms.get(roomId);
     if (!room) {
-      throw new E2eeError(E2eeErrorCode.ROOM_NOT_FOUND, "Room not found");
+      // Expiry notifications cause legacy clients to acknowledge with leaveRoom.
+      // Repeating an already completed departure must not reject that cleanup.
+      return { success: true, userCount: 0, roomDestroyed: true };
     }
 
     const socketValidation = this.isUserInRoom(
@@ -309,26 +370,23 @@ export class RoomManager {
         "context is required"
       );
     }
-    logger.debug({ roomId }, "room.getRoomUsers");
-    const room = this.rooms.get(roomId);
-    if (!room) {
-      logger.debug({ roomId }, "room.getRoomUsersNotFound");
-      return [];
-    }
-    // Validate that the socket is in the room
+    logger.debug({ roomId: capForLog(roomId) }, "room.getRoomUsers");
+
+    // Preserve the legacy missing-room result without revealing whether a
+    // room exists to non-members. Both cases expose the same empty list.
     const socketValidation = this.isUserInRoom(roomId, context.socketClient.id);
     if (!socketValidation.isInRoom) {
-      throw new E2eeError(
-        E2eeErrorCode.SOCKET_NOT_IN_ROOM,
-        "Socket must be in the room to set transfer direction"
-      );
+      logger.debug({ roomId: capForLog(roomId) }, "room.getRoomUsersUnavailable");
+      return [];
     }
+    const room = this.rooms.get(roomId);
+    if (!room) return [];
 
     const users: IE2EESocketUserInfo[] = sortBy(
       Array.from(room.users.values()),
       (item) => item.joinedAt.getTime()
     );
-    logger.debug({ roomId, userCount: users.length }, "room.getRoomUsersResult");
+    logger.debug({ roomId: capForLog(roomId), userCount: users.length }, "room.getRoomUsersResult");
     return users.map((item) => ({
       ...item,
       socketId: undefined,
@@ -476,6 +534,16 @@ export class RoomManager {
 
       if (timeSinceActivity > this.config.roomTimeout) {
         this.rooms.delete(roomId);
+        if (room.users.size > 0) {
+          this.socketServer.to(roomId).emit("user-left", {
+            roomId,
+            userId: room.users.keys().next().value!,
+            userCount: 0,
+          });
+        }
+        // Keep other sessions on the same connection intact; remove only this
+        // room's delivery membership. Existing clients understand user-left.
+        this.socketServer.in(roomId).socketsLeave(roomId);
         cleanedCount += 1;
         logger.info({ roomId }, "room.expiredCleaned");
       }

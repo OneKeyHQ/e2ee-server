@@ -2,6 +2,7 @@
   "name": "@onekeyhq/monorepo",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "yarn@4.14.1",
   "description": "OneKey Monorepo",
   "workspaces": [
     "packages/*",
@@ -19,12 +20,18 @@
     "test": "yarn workspaces foreach --all run test",
     "test:sync": "yarn workspace @onekeyhq/cloud-sync-server test",
     "test:mock": "yarn workspace @onekeyhq/mock-app test",
-    "lint": "yarn workspaces foreach --all run lint",
+    "lint": "eslint packages/*/src packages/*/test examples/*/src examples/*/test --max-warnings 0",
     "lint:sync": "yarn workspace @onekeyhq/cloud-sync-server lint",
     "clean": "yarn workspaces foreach --all run clean"
   },
   "devDependencies": {
-    "rimraf": "^5.0.5"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.12.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.70.0"
   },
   "engines": {
     "node": ">=24"

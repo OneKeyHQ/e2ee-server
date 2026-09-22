@@ -65,11 +65,9 @@ async function startServer(): Promise<ChildProcess> {
     if (server.exitCode !== null) {
       throw new Error(`server exited during startup:\n${output.join('')}`);
     }
-    // eslint-disable-next-line no-await-in-loop
     if ((await health()) === 200) {
       return server;
     }
-    // eslint-disable-next-line no-await-in-loop
     await wait(250);
   }
 
@@ -194,7 +192,6 @@ async function deliver(
           : (received?.data?.result as string);
       return carried === token;
     }
-    // eslint-disable-next-line no-await-in-loop
     await wait(100);
   }
   return false;
@@ -206,7 +203,6 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 3000): Promise<
     if (value !== undefined) {
       return value;
     }
-    // eslint-disable-next-line no-await-in-loop
     await wait(100);
   }
   return undefined;
@@ -397,15 +393,146 @@ async function main(): Promise<void> {
     await clientA.call('roomManager', 'joinRoomAfterCreate', [
       { roomId: room.roomId, ...appInfo('A') },
     ]);
-    await clientB.call('roomManager', 'joinRoom', [{ roomId: room.roomId, ...appInfo('B') }]);
+    const joinedEvents: Array<{ roomId: string; userId: string; userCount: number }> = [];
+    let joinerNotified = false;
+    clientA.socket.on('user-joined', (event) => joinedEvents.push(event));
+    clientB.socket.on('user-joined', () => { joinerNotified = true; });
+    const joined = await clientB.call('roomManager', 'joinRoom', [{ roomId: room.roomId, ...appInfo('B') }]);
+    check(joined.chunkedTransferVersion === 1, 'relay advertises chunked transfer support');
 
+    // Reading on the notified socket also waits for its preceding join event.
     const usersBefore = await clientA.call('roomManager', 'getRoomUsers', [
       { roomId: room.roomId },
     ]);
+    check(
+      joinedEvents.length === 1 && joinedEvents[0].roomId === room.roomId &&
+      joinedEvents[0].userId === joined.userId && joinedEvents[0].userCount === 2,
+      'existing member receives the peer join event with room identity',
+    );
+    check(!joinerNotified, 'joining peer does not receive its own join event');
     check(usersBefore.length === 2, 'session established', `${usersBefore.length} users in room`);
 
     // --- baseline: peers can talk both ways before anything goes wrong ---
     await checkBidirectional(clientA, clientB, room.roomId, 'before');
+
+    // --- security: a socket that never joined the room must not be able to
+    //     inject c2c traffic into it. The relay emits to the client-supplied
+    //     roomId, so without a membership check any connected socket could push
+    //     cancelTransfer / verifyPairingCode / a forged response into a live
+    //     session it only knows the id of. The outsider knows room.roomId but
+    //     never called joinRoom, so both channels must be dropped, and the two
+    //     real members must be unaffected. ---
+    const outsider = makeClient('smoke-client-outsider');
+    await outsider.ready;
+    const injectToken = `inject-${Date.now()}`;
+    const seenBefore = {
+      aReq: clientA.c2cRequests.length,
+      bReq: clientB.c2cRequests.length,
+      aRes: clientA.c2cResponses.length,
+      bRes: clientB.c2cResponses.length,
+    };
+    outsider.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now(),
+        type: 'REQUEST',
+        data: { module: 'peer', method: `inject_${injectToken}`, params: [injectToken] },
+      },
+      roomId: room.roomId,
+    });
+    outsider.socket.emit('e2ee-c2c-response', {
+      payload: { id: Date.now(), type: 'RESPONSE', data: { result: injectToken } },
+      roomId: room.roomId,
+    });
+    outsider.socket.emit('e2ee-c2c-request', {
+      payload: {
+        id: Date.now() + 1,
+        type: 'REQUEST',
+        data: {
+          module: 'api', method: 'sendTransferChunk',
+          params: [{ transferId: 'outsider-chunk', index: 0, data: 'AAAA' }],
+        },
+      },
+      roomId: room.roomId,
+    });
+    await wait(1000);
+    const injected =
+      clientA.c2cRequests.length > seenBefore.aReq ||
+      clientB.c2cRequests.length > seenBefore.bReq ||
+      clientA.c2cResponses.length > seenBefore.aRes ||
+      clientB.c2cResponses.length > seenBefore.bRes;
+    check(
+      !injected,
+      'non-member cannot inject requests, responses, or transfer chunks',
+      injected ? 'INJECTED - membership check bypassed' : 'both channels dropped',
+    );
+    check((await health()) === 200, 'server alive after c2c injection attempt');
+    await checkBidirectional(clientA, clientB, room.roomId, 'after injection attempt');
+
+    const privateRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+    const missingRoom = await outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: 'missing-room' }]);
+    check(
+      !privateRoom.error && !missingRoom.error &&
+      JSON.stringify(privateRoom.data) === "[]" && JSON.stringify(missingRoom.data) === "[]",
+      'private and missing rooms return identical empty lists to non-members',
+    );
+    const queryFlood = await Promise.all(Array.from({ length: 32 }, () =>
+      outsider.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]),
+    ));
+    check(queryFlood.some((reply) => reply.error?.code === 1100), 'room queries exceeding the burst allowance are rate limited');
+    check(queryFlood.every((reply) => reply.error?.stack === undefined), 'rate limit errors omit server stacks');
+    for (let poll = 0; poll < 3; poll += 1) {
+      await wait(1000);
+      const users = await clientA.callRaw('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
+      check(!users.error && users.data?.length === 2, `one-second member poll ${poll + 1} succeeds`);
+    }
+    outsider.socket.disconnect();
+
+    // More than one chunk must pass the relay without the legacy 3 second limit.
+    const chunkStart = clientB.c2cRequests.length;
+    const chunkData = 'A'.repeat(64 * 1024);
+    for (let index = 0; index < 12; index += 1) {
+      clientA.socket.emit('e2ee-c2c-request', {
+        roomId: room.roomId,
+        payload: { id: 70000 + index, type: 'REQUEST', data: {
+          module: 'api', method: 'sendTransferChunk',
+          params: [{ transferId: 'smoke-chunks', index, data: chunkData }],
+        } },
+      });
+    }
+    await wait(500);
+    const chunks = clientB.c2cRequests.slice(chunkStart);
+    check(chunks.length === 12, 'consecutive 64 KiB chunks are forwarded', String(chunks.length));
+    check(chunks.every((packet, index) => packet.data.params[0].index === index && packet.data.params[0].data === chunkData), 'chunk contents and order remain intact');
+
+    const invalidStart = clientB.c2cRequests.length;
+    for (const params of [
+      [{ transferId: 'smoke-chunks', index: 0, data: chunkData + 'A' }],
+      [{ transferId: 'smoke-chunks', index: -1, data: 'AAAA' }],
+      [{ transferId: 'smoke-chunks', index: 0, data: 'AAAA', extra: 'large' }],
+      [{ transferId: 'smoke-chunks', index: 0, data: 'AAAA' }, 'extra'],
+      [{ transferId: 'smoke-chunks', index: 0, data: '????' }],
+    ]) {
+      clientA.socket.emit('e2ee-c2c-request', {
+        roomId: room.roomId,
+        payload: { id: 71000, type: 'REQUEST', data: { module: 'api', method: 'sendTransferChunk', params } },
+      });
+    }
+    await wait(300);
+    check(clientB.c2cRequests.length === invalidStart, 'oversized and malformed chunks never reach the peer');
+
+    await wait(1100);
+    const burstStart = clientB.c2cRequests.length;
+    for (let index = 0; index < 530; index += 1) {
+      clientA.socket.emit('e2ee-c2c-request', {
+        roomId: room.roomId,
+        payload: { id: 72000 + index, type: 'REQUEST', data: {
+          module: 'api', method: 'sendTransferChunk',
+          params: [{ transferId: 'smoke-burst', index, data: 'AAAA' }],
+        } },
+      });
+    }
+    await wait(500);
+    check(clientB.c2cRequests.length - burstStart === 512, 'chunk floods stay capped at 512 messages per second');
 
     // --- both clients attack every listener ---
     console.log(
@@ -506,6 +633,29 @@ async function main(): Promise<void> {
     const stillWorks = await clientA.call('roomManager', 'getRoomUsers', [{ roomId: room.roomId }]);
     check(stillWorks.length === 2, 'session unaffected by oversized-log flood');
     logFlooder.socket.disconnect();
+
+    // --- an error response must never carry the server stack trace. It cannot
+    //     be stopped by E2eeError.toJSON(): JsBridgeBase.createPayload()
+    //     replaces payload.error with its own plain copy first, and that copy
+    //     (toPlainError) reads err.stack straight off the instance. So it is
+    //     stripped in sendPayload(), and it has to stay stripped.
+    //     A fresh client keeps this off the rate-limit windows used above. ---
+    const errorProbe = makeClient('smoke-client-F');
+    await errorProbe.ready;
+    const errorPayload = await errorProbe.callRaw('roomManager', 'joinRoom', [
+      { roomId: 'not-a-valid-room-id', ...appInfo('F') },
+    ]);
+    check(
+      Boolean(errorPayload.error),
+      'invalid roomId is rejected with an error',
+      `code=${String(errorPayload.error?.code)}`,
+    );
+    check(
+      errorPayload.error?.stack === undefined,
+      'error response carries no server stack trace',
+      errorPayload.error?.stack ? 'LEAKED - server stack sent to client' : 'no stack field',
+    );
+    errorProbe.socket.disconnect();
 
     const clientC = makeClient('smoke-client-C');
     await clientC.ready;

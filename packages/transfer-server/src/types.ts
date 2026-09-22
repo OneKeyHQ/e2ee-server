@@ -4,35 +4,31 @@ import type { IJsBridgeMessagePayload } from '@onekeyfe/cross-inpage-provider-ty
 // Export error classes
 export { E2eeError, E2eeErrorCode } from './errors';
 
-// Socket.IO event type definitions
+// Client relay input wraps the bridge payload; peer output is unwrapped.
+export interface IRelayEnvelope {
+  roomId: string;
+  payload: IJsBridgeMessagePayload;
+}
+
 export interface IServerToClientEvents {
-  'room-created': (data: { roomId: string; encryptionKey: string }) => void;
-  'room-joined': (data: { roomId: string; userId: string }) => void;
-  'user-joined': (data: { userId: string; userCount: number }) => void;
-  'user-left': (data: { userId: string; userCount: number }) => void;
-  'encrypted-data': (data: {
-    encryptedData: string;
-    senderId: string;
-    timestamp: number;
+  'e2ee-response': (payload: IJsBridgeMessagePayload) => void;
+  'e2ee-c2c-request': (payload: IJsBridgeMessagePayload) => void;
+  'e2ee-c2c-response': (payload: IJsBridgeMessagePayload) => void;
+  'user-joined': (data: { roomId: string; userId: string; userCount: number }) => void;
+  'user-left': (data: { roomId: string; userId: string; userCount: number }) => void;
+  'room-full': (data: { roomId: string; userCount: number }) => void;
+  'start-transfer': (data: {
+    roomId: string;
+    fromUserId: string;
+    toUserId: string;
+    randomNumber: string;
   }) => void;
-  'room-error': (data: { error: string }) => void;
-  'room-status': (data: { userCount: number; users: string[] }) => void;
-  'room-list': (data: { rooms: IRoomListItem[] }) => void;
 }
 
 export interface IClientToServerEvents {
-  'e2ee-request': (event: string, payload: IJsBridgeMessagePayload) => void;
-  'e2ee-response': (event: string, payload: unknown) => void;
-
-  'create-room': () => void;
-  'join-room': (data: { roomId: string; encryptionKey: string }) => void;
-  'send-encrypted-data': (data: {
-    roomId: string;
-    encryptedData: string;
-  }) => void;
-  'leave-room': (data: { roomId: string }) => void;
-  'get-room-status': (data: { roomId: string }) => void;
-  'get-room-list': () => void;
+  'e2ee-request': (payload: IJsBridgeMessagePayload) => void;
+  'e2ee-c2c-request': (envelope: IRelayEnvelope) => void;
+  'e2ee-c2c-response': (envelope: IRelayEnvelope) => void;
 }
 
 export interface IInterServerEvents {
@@ -48,6 +44,12 @@ export interface ISocketData {
 // Room data structure
 export interface IRoom {
   id: string;
+  // Server-generated key handed to clients on create/join. The OneKey client
+  // does not consume it, and this server never encrypts with it - payloads are
+  // relayed as-is. Real end-to-end protection comes from a key the clients
+  // derive themselves (pairing code + ECDHE shared secret + room user list).
+  // The server knows the user list but not the secret key material.
+  // See RoomManager.createRoom().
   encryptionKey: string;
   users: Map<string, IE2EESocketUserInfo>;
   transferDirection?:
@@ -59,16 +61,6 @@ export interface IRoom {
   createdAt: Date;
   lastActivity: Date;
   maxUsers: number;
-}
-
-// Room list item
-export interface IRoomListItem {
-  roomId: string;
-  userCount: number;
-  maxUsers: number;
-  users: string[];
-  createdAt: string;
-  lastActivity: string;
 }
 
 // User information
@@ -83,14 +75,6 @@ export interface IE2EESocketUserInfo {
   appDeviceName: string;
 }
 
-// Encrypted message structure
-export interface IEncryptedMessage {
-  encryptedData: string;
-  senderId: string;
-  timestamp: number;
-  roomId: string;
-}
-
 // Room configuration
 export interface IRoomConfig {
   maxUsers: number;
@@ -101,15 +85,7 @@ export interface IRoomConfig {
 // Server configuration
 export interface IServerConfig {
   port: number;
-  corsOrigins: string[];
   roomConfig: IRoomConfig;
-}
-
-// API response type
-export interface IApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
 }
 
 export interface IE2EEServerApi {
