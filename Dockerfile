@@ -1,4 +1,4 @@
-FROM node:24-alpine AS build
+FROM node:24.22.1-alpine3.23 AS build
 
 WORKDIR /app
 
@@ -25,7 +25,7 @@ RUN yarn workspace @onekeyhq/transfer-server build
 # Keep the runtime copy valid even when all dependencies are hoisted
 RUN mkdir -p packages/transfer-server/node_modules
 
-FROM node:24-alpine
+FROM node:24.22.1-alpine3.23
 
 WORKDIR /app
 
