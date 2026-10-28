@@ -40,6 +40,20 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
     return { ...user }; // Return a copy to prevent mutation
   }
 
+  async createUserIfMissing(userId: string): Promise<boolean> {
+    if (this.userData.has(userId)) return false;
+    if (this.userData.size >= this.MAX_USERS) {
+      throw new Error('User limit reached');
+    }
+    this.userData.set(userId, { userId, nonce: 0, pwdHash: '' });
+    return true;
+  }
+
+  async updateUserFields(userId: string, data: Record<string, any>) {
+    const user = this.userData.get(userId);
+    if (user) this.userData.set(userId, { ...user, ...data });
+  }
+
   getDeviceModel(): any {
     return {
       find: () => ({
