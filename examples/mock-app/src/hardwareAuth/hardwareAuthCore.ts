@@ -16,10 +16,12 @@ import {
 
 export const HW_CHALLENGE_PREFIX = 'OneKey Cloud Sync sign-in';
 
+// The app's error type needs integer codes. Placeholder values: align them
+// with the Prime production codes before shipping.
 export enum EHardwareAuthErrorCode {
-  BadRequest = 'HW_AUTH_BAD_REQUEST',
-  Unauthorized = 'HW_AUTH_UNAUTHORIZED',
-  RateLimited = 'HW_AUTH_RATE_LIMITED',
+  BadRequest = 90400,
+  Unauthorized = 90401,
+  RateLimited = 90429,
 }
 
 export class HardwareAuthError extends Error {

@@ -3,12 +3,15 @@ import { Context } from '@midwayjs/koa';
 import { HardwareAuthError } from '../hardwareAuth/hardwareAuthCore';
 
 // Prime responses use { code, message, data }; code 0 means success.
-export type IApiResponse<T> = { code: number | string; message: string; data: T | null };
+export type IApiResponse<T> = { code: number; message: string; data: T | null };
 
-export const SYNC_ERROR_CODES: Record<string, string> = {
-  PrimeUserPwdHashInvalidError: 'PRIME_USER_PWD_HASH_INVALID',
-  PrimeUserNonceInvalidError: 'PRIME_USER_NONCE_INVALID',
+// Integer codes, as the app requires. Placeholders until aligned with Prime.
+export const SYNC_ERROR_CODES: Record<string, number> = {
+  PrimeUserPwdHashInvalidError: 90010,
+  PrimeUserNonceInvalidError: 90011,
 };
+export const BAD_REQUEST_CODE = 90400;
+export const INJECTED_FAULT_CODE = 90503;
 
 export async function respond<T>(
   ctx: Context,
@@ -27,7 +30,7 @@ export async function respond<T>(
     }
     ctx.status = 400;
     return {
-      code: 'BAD_REQUEST',
+      code: BAD_REQUEST_CODE,
       message: error instanceof Error ? error.message : 'Bad request',
       data: null,
     };
@@ -36,5 +39,5 @@ export async function respond<T>(
 
 export function injectedFailure(ctx: Context): IApiResponse<null> {
   ctx.status = 503;
-  return { code: 'INJECTED_FAULT', message: 'Injected fault', data: null };
+  return { code: INJECTED_FAULT_CODE, message: 'Injected fault', data: null };
 }

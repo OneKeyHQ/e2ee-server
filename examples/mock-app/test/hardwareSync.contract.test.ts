@@ -282,7 +282,7 @@ describe('hardware Cloud Sync protocol contract', () => {
       const stale = await authed(dk, tokens, 'POST', `${SYNC}/check`, {
         nonce: 2, pwdHash: v1, localData: [],
       });
-      expect(stale.body.code).toBe('PRIME_USER_PWD_HASH_INVALID');
+      expect(stale.body.code).toBe(90010);
 
       const fresh = await authed(dk, tokens, 'POST', `${SYNC}/check`, {
         nonce: 2, pwdHash: v2, localData: [],
@@ -325,7 +325,7 @@ describe('hardware Cloud Sync protocol contract', () => {
         });
       expect((await firstFlush(dkA, a, 'from-a')).body.code).toBe(0);
       const loser = await firstFlush(dkB, b, 'from-b');
-      expect(loser.body.code).toBe('PRIME_USER_PWD_HASH_INVALID');
+      expect(loser.body.code).toBe(90010);
       const lock = await authed(dkB, b, 'GET', `${SYNC}/lock`);
       expect(lock.body.data.lock.data).toBe('wrapped-dek-for-from-a');
     });
