@@ -14,7 +14,7 @@ import {
   IHardwareAuthState,
 } from '../middleware/hardwareAuth.middleware';
 import { HardwareAuthService } from '../service/hardwareAuth.service';
-import { respond } from './apiResponse';
+import { injectedFailure, respond } from './apiResponse';
 
 // Production-shaped sync routes guarded by hardware token auth.
 @Controller('/prime/v1/sync', { middleware: [HardwareAuthMiddleware] })
@@ -57,6 +57,14 @@ export class PrimeSyncController {
 
   @Post('/flush')
   async flush(@Body() body: PrimeSyncFlushRequestDTO) {
-    return this.withUser(user => this.syncService.flushDeviceData(user, body));
+    const fault = this.hardwareAuth.takeFault('flush');
+    if (fault === 'beforeWrite') return injectedFailure(this.ctx);
+    const result = await this.withUser(user =>
+      this.syncService.flushDeviceData(user, body)
+    );
+    if (fault === 'dropResponse' && result.code === 0) {
+      return injectedFailure(this.ctx);
+    }
+    return result;
   }
 }

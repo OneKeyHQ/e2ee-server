@@ -7,6 +7,7 @@ import { join } from 'path';
 import { MongodbAdapterImpl } from './adapter/mongodb.adapter';
 import { KafkaAdapterImpl } from './adapter/kafka.adapter';
 import { SyncDependenciesProvider } from './service/dependencies.provider';
+import { LocalCorsMiddleware } from './middleware/localCors.middleware';
 
 @Configuration({
   imports: [
@@ -21,6 +22,7 @@ export class MainConfiguration {
   app!: Application;
   
   async onReady(container: IMidwayContainer) {
+    this.app.useMiddleware(LocalCorsMiddleware);
     const mongodbAdapter = await container.getAsync(MongodbAdapterImpl);
     const kafkaAdapter = await container.getAsync(KafkaAdapterImpl);
     const dependenciesProvider = await container.getAsync(SyncDependenciesProvider);

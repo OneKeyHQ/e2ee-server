@@ -340,6 +340,19 @@ export class PrimeSyncService {
     user: IPrimeUser,
     body: PrimeSyncFlushRequestDTO
   ): Promise<PrimeSyncUploadResponseDTO> {
+    if (
+      body.expectedPwdHash !== undefined &&
+      (user.pwdHash || '') !== body.expectedPwdHash
+    ) {
+      const deps = this.getDependencies();
+      throw new deps.errors.PrimeUserPwdHashInvalidError('', {
+        cause: {
+          a: user.pwdHash,
+          b: body.expectedPwdHash,
+        },
+      });
+    }
+
     const isPwdHashExist = body.pwdHash && body.lock;
     if (!isPwdHashExist && body.localData?.length) {
       const deps = this.getDependencies();

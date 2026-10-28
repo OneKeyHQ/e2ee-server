@@ -2,7 +2,7 @@ import { Body, Controller, Inject, Post } from '@midwayjs/core';
 import { Context } from '@midwayjs/koa';
 
 import { HardwareAuthService } from '../service/hardwareAuth.service';
-import { respond } from './apiResponse';
+import { injectedFailure, respond } from './apiResponse';
 
 @Controller('/prime/v1/hw-sync/auth')
 export class HardwareAuthController {
@@ -13,7 +13,7 @@ export class HardwareAuthController {
   hardwareAuth!: HardwareAuthService;
 
   @Post('/challenge')
-  async challenge(@Body() body: { identityPublicKey: string; deviceKeyJwk: any }) {
+  async challenge(@Body() body: { identityPublicKey?: string; deviceKeyJwk: any }) {
     return respond(this.ctx, () =>
       this.hardwareAuth.core.createChallenge({
         identityPublicKey: body?.identityPublicKey,
@@ -34,6 +34,9 @@ export class HardwareAuthController {
 
   @Post('/refresh')
   async refresh(@Body() body: { refreshToken: string }) {
+    if (this.hardwareAuth.takeFault('refresh') === 'fail') {
+      return injectedFailure(this.ctx);
+    }
     return respond(this.ctx, () =>
       this.hardwareAuth.core.refresh(
         { refreshToken: body?.refreshToken },

@@ -306,6 +306,107 @@ describe('hardware Cloud Sync protocol contract', () => {
       const download = await authed(dkB, b, 'POST', `${SYNC}/download`, { pwdHash: 'none' });
       expect(download.body.data.serverData).toEqual([]);
     });
+
+    it('only one first-enable flush wins (expectedPwdHash)', async () => {
+      const device = new TestDevice();
+      const dkA = new TestDeviceKey();
+      const dkB = new TestDeviceKey();
+      const a = await login(device, dkA);
+      const b = await login(device, dkB);
+      const firstFlush = (dk: TestDeviceKey, t: ITokens, pwdHash: string) =>
+        authed(dk, t, 'POST', `${SYNC}/flush`, {
+          nonce: 0,
+          pwdHash,
+          expectedPwdHash: '',
+          lock: lockItem(pwdHash),
+          localData: [
+            { key: `dek:${pwdHash}`, dataType: 'HardwareKeyEnvelope', data: 'e', dataTimestamp: 1, isDeleted: false },
+          ],
+        });
+      expect((await firstFlush(dkA, a, 'from-a')).body.code).toBe(0);
+      const loser = await firstFlush(dkB, b, 'from-b');
+      expect(loser.body.code).toBe('PRIME_USER_PWD_HASH_INVALID');
+      const lock = await authed(dkB, b, 'GET', `${SYNC}/lock`);
+      expect(lock.body.data.lock.data).toBe('wrapped-dek-for-from-a');
+    });
+
+    it('accepts unknown fields the app sends', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      const res = await authed(dk, tokens, 'POST', `${SYNC}/download`, {
+        pwdHash: 'none',
+        start: 0,
+      });
+      expect(res.body.code).toBe(0);
+    });
+  });
+
+  describe('identity from signature', () => {
+    it('verifies without identityPublicKey and uses the signer as the user', async () => {
+      const device = new TestDevice();
+      const dk = new TestDeviceKey();
+      const challenge = await post(`${AUTH}/challenge`, { deviceKeyJwk: dk.jwk });
+      expect(challenge.body.code).toBe(0);
+      const { challengeId, message } = challenge.body.data;
+      const res = await post(
+        `${AUTH}/verify`,
+        { challengeId, signature: device.signMessage(message) },
+        { dpop: dk.dpop({ htm: 'POST', path: `${AUTH}/verify` }) }
+      );
+      expect(res.body.code).toBe(0);
+      const state = await createHttpRequest(app)
+        .get('/prime/v1/debug/hw-sync/state')
+        .set('Host', TEST_HOST);
+      const ids = state.body.data.users.map((u: any) => u.userId);
+      expect(ids).toContain(`Hardware:${device.publicKey}`);
+    });
+  });
+
+  describe('debug and fault injection', () => {
+    const arm = (faults: Record<string, string>) =>
+      post('/prime/v1/debug/hw-sync/faults', faults);
+
+    it('flush beforeWrite fails without changing data', async () => {
+      const device = new TestDevice();
+      const dk = new TestDeviceKey();
+      const tokens = await login(device, dk);
+      await arm({ flush: 'beforeWrite' });
+      const res = await authed(dk, tokens, 'POST', `${SYNC}/flush`, {
+        nonce: 0, pwdHash: 'v1', lock: lockItem('v1'),
+        localData: [{ key: 'k', dataType: 'Wallet', data: 'd', dataTimestamp: 1, isDeleted: false }],
+      });
+      expect(res.status).toBe(503);
+      const lock = await authed(dk, tokens, 'GET', `${SYNC}/lock`);
+      expect(lock.body.data.lock).toBeNull();
+    });
+
+    it('flush dropResponse applies the change but reports failure', async () => {
+      const device = new TestDevice();
+      const dk = new TestDeviceKey();
+      const tokens = await login(device, dk);
+      await arm({ flush: 'dropResponse' });
+      const res = await authed(dk, tokens, 'POST', `${SYNC}/flush`, {
+        nonce: 0, pwdHash: 'v1', lock: lockItem('v1'),
+        localData: [{ key: 'k', dataType: 'Wallet', data: 'd', dataTimestamp: 1, isDeleted: false }],
+      });
+      expect(res.status).toBe(503);
+      const state = await createHttpRequest(app)
+        .get('/prime/v1/debug/hw-sync/state')
+        .set('Host', TEST_HOST);
+      const user = state.body.data.users.find(
+        (u: any) => u.userId === `Hardware:${device.publicKey}`
+      );
+      expect(user).toMatchObject({ pwdHash: 'v1', hasLock: true, itemCount: 1 });
+      expect(JSON.stringify(state.body)).not.toContain('wrapped-dek-for');
+    });
+
+    it('refresh fault fails once, then refresh works', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      await arm({ refresh: 'fail' });
+      expect((await refresh(dk, tokens.refreshToken)).status).toBe(503);
+      expect((await refresh(dk, tokens.refreshToken)).body.code).toBe(0);
+    });
   });
 
   describe('refresh', () => {

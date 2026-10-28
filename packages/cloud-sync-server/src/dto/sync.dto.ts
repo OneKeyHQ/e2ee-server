@@ -42,6 +42,11 @@ export class PrimeSyncFlushRequestDTO {
   @Rule(getSchema(PrimeSyncUploadItem).optional())
   lock?: PrimeSyncUploadItem;
 
+  // Compare-and-swap: when set, the flush only applies if the user's current
+  // pwdHash equals it ('' = no key yet). Omitted keeps the old behavior.
+  @Rule(RuleType.string().optional().allow(''))
+  expectedPwdHash?: string;
+
   @Rule(
     RuleType.array()
       .items(getSchema(PrimeSyncUploadItem))

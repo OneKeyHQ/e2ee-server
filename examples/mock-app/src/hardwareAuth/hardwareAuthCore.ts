@@ -75,7 +75,8 @@ export type ITokenResponse = {
 
 type IChallengeRecord = {
   nonce: string;
-  identityPublicKey: string;
+  // Optional: when omitted, the identity is the key recovered at verify.
+  identityPublicKey?: string;
   jkt: string;
   message: string;
   expiresAt: number;
@@ -143,18 +144,22 @@ export class HardwareAuthCore {
   }
 
   async createChallenge(params: {
-    identityPublicKey: string;
+    identityPublicKey?: string;
     deviceKeyJwk: JsonWebKey;
   }): Promise<{ challengeId: string; message: string; expiresAt: number }> {
     const { identityPublicKey, deviceKeyJwk } = params;
-    if (!/^(02|03)[0-9a-f]{64}$/.test(identityPublicKey ?? '')) {
+    if (
+      identityPublicKey !== undefined &&
+      !/^(02|03)[0-9a-f]{64}$/.test(identityPublicKey)
+    ) {
       throw badRequest('Invalid identityPublicKey');
     }
     const jkt = ecJwkThumbprint(deviceKeyJwk);
     if (!jkt) throw badRequest('Invalid deviceKeyJwk');
 
+    // Rate-limit by identity when given, otherwise by device key.
     const minute = Math.floor(this.nowSeconds() / 60);
-    const rateKey = key.challengeRate(identityPublicKey, minute);
+    const rateKey = key.challengeRate(identityPublicKey ?? jkt, minute);
     const count = Number((await this.opts.store.get(rateKey)) ?? '0') + 1;
     if (count > this.opts.challengeLimitPerMinute) {
       throw new HardwareAuthError(
@@ -274,11 +279,16 @@ export class HardwareAuthCore {
       challenge.message,
       params.signature ?? ''
     );
-    if (signer !== challenge.identityPublicKey) throw unauthorized();
+    if (
+      !signer ||
+      (challenge.identityPublicKey && signer !== challenge.identityPublicKey)
+    ) {
+      throw unauthorized();
+    }
     const jkt = await this.verifyDpop(req);
     if (jkt !== challenge.jkt) throw unauthorized();
 
-    const userId = hardwareUserId(challenge.identityPublicKey);
+    const userId = hardwareUserId(signer);
     const isNewUser = await this.opts.users.ensureUser(userId);
     const now = this.opts.now();
     const session: ISessionRecord = {
@@ -366,6 +376,22 @@ export class HardwareAuthCore {
     const jkt = await this.verifyDpop(req, accessToken);
     if (jkt !== claims.cnf?.jkt || jkt !== session.jkt) throw unauthorized();
     return { userId: session.userId, sessionId: session.sessionId };
+  }
+
+  async listSessions(
+    userId: string
+  ): Promise<{ sessionId: string; revoked: boolean; createdAt: number }[]> {
+    const ids = (await this.getJson<string[]>(key.userSessions(userId))) ?? [];
+    const sessions = await Promise.all(
+      ids.map(sid => this.getJson<ISessionRecord>(key.session(sid)))
+    );
+    return sessions
+      .filter((s): s is ISessionRecord => !!s)
+      .map(({ sessionId, revoked, createdAt }) => ({
+        sessionId,
+        revoked,
+        createdAt,
+      }));
   }
 
   async revoke(

@@ -54,6 +54,27 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
     if (user) this.userData.set(userId, { ...user, ...data });
   }
 
+  // Local debug view: metadata only, never item data.
+  debugUsers(prefix: string) {
+    return Array.from(this.userData.values())
+      .filter(user => user.userId.startsWith(prefix))
+      .map(user => {
+        const items = this.syncData.get(user.userId) || [];
+        const countByType: Record<string, number> = {};
+        items.forEach(item => {
+          countByType[item.dataType] = (countByType[item.dataType] || 0) + 1;
+        });
+        return {
+          userId: user.userId,
+          nonce: user.nonce,
+          pwdHash: user.pwdHash,
+          hasLock: this.lockData.has(user.userId),
+          itemCount: items.length,
+          countByType,
+        };
+      });
+  }
+
   getDeviceModel(): any {
     return {
       find: () => ({

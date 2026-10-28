@@ -33,3 +33,8 @@ export async function respond<T>(
     };
   }
 }
+
+export function injectedFailure(ctx: Context): IApiResponse<null> {
+  ctx.status = 503;
+  return { code: 'INJECTED_FAULT', message: 'Injected fault', data: null };
+}

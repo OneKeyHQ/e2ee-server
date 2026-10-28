@@ -15,6 +15,14 @@ import {
 export type IHardwareSyncConfig = {
   // Leave empty to generate a random secret per process.
   tokenSecret?: string;
+  enableDebugRoutes?: boolean;
+};
+
+export type IHardwareSyncFaults = {
+  // 'beforeWrite': fail without touching data. 'dropResponse': apply the flush,
+  // then fail as if the response was lost.
+  flush?: 'beforeWrite' | 'dropResponse';
+  refresh?: 'fail';
 };
 
 @Provide()
@@ -30,6 +38,17 @@ export class HardwareAuthService {
   config?: IHardwareSyncConfig;
 
   core!: HardwareAuthCore;
+
+  // One-shot faults for local recovery tests; each is cleared once used.
+  faults: IHardwareSyncFaults = {};
+
+  takeFault<K extends keyof IHardwareSyncFaults>(
+    name: K
+  ): IHardwareSyncFaults[K] {
+    const fault = this.faults[name];
+    delete this.faults[name];
+    return fault;
+  }
 
   @Init()
   async init() {
