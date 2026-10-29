@@ -18,6 +18,16 @@ export default {
       message: 'Too many requests from this IP, please try again later.',
     },
   },
+  // The app sends extra fields (e.g. download `start`); production ignores them.
+  validate: {
+    validationOptions: {
+      allowUnknown: true,
+    },
+  },
+  hardwareSync: {
+    // Local-only debug state and fault injection routes.
+    enableDebugRoutes: true,
+  },
   midwayLogger: {
     default: {
       maxSize: '100m',

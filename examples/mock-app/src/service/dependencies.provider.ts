@@ -1,11 +1,15 @@
-import { Provide, Scope, ScopeEnum } from '@midwayjs/core';
+import { Inject, Provide, Scope, ScopeEnum } from '@midwayjs/core';
 import { ISyncDependenciesProvider, ISyncErrors, ITraceHeaders } from '@onekeyhq/cloud-sync-server';
+import { MongodbAdapterImpl } from '../adapter/mongodb.adapter';
 
 @Provide()
 @Scope(ScopeEnum.Singleton)
 export class SyncDependenciesProvider implements ISyncDependenciesProvider {
+  @Inject()
+  mongodbAdapter!: MongodbAdapterImpl;
+
   async updateUser(userId: string, data: any): Promise<void> {
-    console.log(`[Mock] Updating user ${userId} with data:`, data);
+    await this.mongodbAdapter.updateUserFields(userId, data);
   }
 
   getTraceHeaders(): ITraceHeaders {
