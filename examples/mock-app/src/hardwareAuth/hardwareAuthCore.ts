@@ -96,10 +96,15 @@ type ISessionRecord = {
   lastActiveAt: number;
 };
 
+// Revokes the user's sessions created before `before`, except `keep`.
+type IUserRevocation = { before: number; keep: string };
+
 const key = {
   challenge: (id: string) => `hw:challenge:${id}`,
   challengeRate: (ik: string, minute: number) => `hw:rate:${ik}:${minute}`,
   session: (sid: string) => `hw:session:${sid}`,
+  sessionRevoked: (sid: string) => `hw:session-revoked:${sid}`,
+  userRevocation: (userId: string) => `hw:user-revocation:${userId}`,
   userSessions: (userId: string) => `hw:user-sessions:${userId}`,
   refresh: (hash: string) => `hw:refresh:${hash}`,
   refreshUsed: (hash: string) => `hw:refresh-used:${hash}`,
@@ -324,7 +329,34 @@ export class HardwareAuthCore {
     return { ...(await this.issueTokens(session)), isNewUser };
   }
 
+  // Revocation lives in keys a refresh never writes: a refresh racing a revoke
+  // writes its stale session copy back, but cannot mark it live again. The
+  // keys outlast the session record, which a revoked session cannot renew.
+  private get revocationTtlSeconds() {
+    return this.opts.refreshTtlSeconds + 24 * 3600;
+  }
+
+  private async isRevoked(session: ISessionRecord): Promise<boolean> {
+    if (session.revoked) return true;
+    if (await this.opts.store.get(key.sessionRevoked(session.sessionId))) {
+      return true;
+    }
+    const userRevocation = await this.getJson<IUserRevocation>(
+      key.userRevocation(session.userId)
+    );
+    return (
+      !!userRevocation &&
+      session.createdAt < userRevocation.before &&
+      session.sessionId !== userRevocation.keep
+    );
+  }
+
   private async revokeSession(sessionId: string) {
+    await this.opts.store.set(
+      key.sessionRevoked(sessionId),
+      '1',
+      this.revocationTtlSeconds
+    );
     const session = await this.getJson<ISessionRecord>(key.session(sessionId));
     if (!session || session.revoked) return;
     await this.opts.store.del(key.refresh(session.refreshHash));
@@ -345,7 +377,7 @@ export class HardwareAuthCore {
       const session = await this.getJson<ISessionRecord>(
         key.session(reusedSid)
       );
-      if (!session || session.revoked) throw unauthorized();
+      if (!session || (await this.isRevoked(session))) throw unauthorized();
       // An invalid proof (bad clock, malformed, replayed) shows nothing about
       // who holds the token, so it must not revoke the session.
       const jkt = await this.verifyDpop(req);
@@ -366,7 +398,11 @@ export class HardwareAuthCore {
     const session = sid
       ? await this.getJson<ISessionRecord>(key.session(sid))
       : undefined;
-    if (!session || session.revoked || session.refreshHash !== hash) {
+    if (
+      !session ||
+      session.refreshHash !== hash ||
+      (await this.isRevoked(session))
+    ) {
       throw unauthorized();
     }
     const jkt = await this.verifyDpop(req);
@@ -405,7 +441,11 @@ export class HardwareAuthCore {
     const session = await this.getJson<ISessionRecord>(
       key.session(claims.sid)
     );
-    if (!session || session.revoked || session.userId !== claims.sub) {
+    if (
+      !session ||
+      session.userId !== claims.sub ||
+      (await this.isRevoked(session))
+    ) {
       throw unauthorized();
     }
     const jkt = await this.verifyDpop(req, accessToken);
@@ -420,13 +460,15 @@ export class HardwareAuthCore {
     const sessions = await Promise.all(
       ids.map(sid => this.getJson<ISessionRecord>(key.session(sid)))
     );
-    return sessions
-      .filter((s): s is ISessionRecord => !!s)
-      .map(({ sessionId, revoked, createdAt }) => ({
-        sessionId,
-        revoked,
-        createdAt,
-      }));
+    return Promise.all(
+      sessions
+        .filter((s): s is ISessionRecord => !!s)
+        .map(async session => ({
+          sessionId: session.sessionId,
+          revoked: await this.isRevoked(session),
+          createdAt: session.createdAt,
+        }))
+    );
   }
 
   async revoke(
@@ -438,6 +480,14 @@ export class HardwareAuthCore {
       return { revoked: 1 };
     }
     if (scope !== 'allExceptCurrent') throw badRequest('Invalid scope');
+    // Covers every older session, including ones the session list lost (its
+    // entry expired while they kept refreshing, or a concurrent sign-in
+    // overwrote it). The list only finds refresh tokens to delete.
+    await this.setJson(
+      key.userRevocation(auth.userId),
+      { before: this.opts.now(), keep: auth.sessionId },
+      this.revocationTtlSeconds
+    );
     const sessions =
       (await this.getJson<string[]>(key.userSessions(auth.userId))) ?? [];
     const others = sessions.filter(sid => sid !== auth.sessionId);
