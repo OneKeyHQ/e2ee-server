@@ -34,15 +34,18 @@ export class HardwareAuthController {
 
   @Post('/refresh')
   async refresh(@Body() body: { refreshToken: string }) {
-    if (this.hardwareAuth.takeFault('refresh') === 'fail') {
-      return injectedFailure(this.ctx);
-    }
-    return respond(this.ctx, () =>
+    const fault = this.hardwareAuth.takeFault('refresh');
+    if (fault === 'fail') return injectedFailure(this.ctx);
+    const result = await respond(this.ctx, () =>
       this.hardwareAuth.core.refresh(
         { refreshToken: body?.refreshToken },
         this.hardwareAuth.dpopRequest(this.ctx)
       )
     );
+    if (fault === 'dropResponse' && result.code === 0) {
+      return injectedFailure(this.ctx);
+    }
+    return result;
   }
 
   @Post('/revoke')

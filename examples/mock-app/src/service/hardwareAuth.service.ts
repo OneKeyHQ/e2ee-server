@@ -22,7 +22,8 @@ export type IHardwareSyncFaults = {
   // 'beforeWrite': fail without touching data. 'dropResponse': apply the flush,
   // then fail as if the response was lost.
   flush?: 'beforeWrite' | 'dropResponse';
-  refresh?: 'fail';
+  // 'fail': fail without rotating. 'dropResponse': rotate, then fail.
+  refresh?: 'fail' | 'dropResponse';
 };
 
 @Provide()

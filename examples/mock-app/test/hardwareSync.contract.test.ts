@@ -407,6 +407,21 @@ describe('hardware Cloud Sync protocol contract', () => {
       expect((await refresh(dk, tokens.refreshToken)).status).toBe(503);
       expect((await refresh(dk, tokens.refreshToken)).body.code).toBe(0);
     });
+
+    it('after a lost refresh reply the previous token still refreshes', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      await arm({ refresh: 'dropResponse' });
+      expect((await refresh(dk, tokens.refreshToken)).status).toBe(503);
+
+      const retry = await refresh(dk, tokens.refreshToken);
+      expect(retry.body.code).toBe(0);
+      expect(retry.body.data.sessionId).toBe(tokens.sessionId);
+      const next = await refresh(dk, retry.body.data.refreshToken);
+      expect(next.body.code).toBe(0);
+      const lock = await authed(dk, next.body.data, 'GET', `${SYNC}/lock`);
+      expect(lock.body.code).toBe(0);
+    });
   });
 
   describe('refresh', () => {
@@ -421,17 +436,57 @@ describe('hardware Cloud Sync protocol contract', () => {
       expect(lock.body.code).toBe(0);
     });
 
-    it('reusing a rotated-out token revokes the whole session', async () => {
+    it('reusing a token older than the previous one revokes the whole session', async () => {
       const dk = new TestDeviceKey();
       const tokens = await login(new TestDevice(), dk);
-      const rotated = (await refresh(dk, tokens.refreshToken)).body.data;
+      const first = (await refresh(dk, tokens.refreshToken)).body.data;
+      const second = (await refresh(dk, first.refreshToken)).body.data;
 
       const reuse = await refresh(dk, tokens.refreshToken);
       expect(reuse.status).toBe(401);
 
-      expect((await refresh(dk, rotated.refreshToken)).status).toBe(401);
-      const lock = await authed(dk, rotated, 'GET', `${SYNC}/lock`);
+      expect((await refresh(dk, second.refreshToken)).status).toBe(401);
+      const lock = await authed(dk, second, 'GET', `${SYNC}/lock`);
       expect(lock.status).toBe(401);
+    });
+
+    it('the previous token rotates again while the current one is unused', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      await refresh(dk, tokens.refreshToken);
+
+      const first = await refresh(dk, tokens.refreshToken);
+      expect(first.body.code).toBe(0);
+      const second = await refresh(dk, tokens.refreshToken);
+      expect(second.body.code).toBe(0);
+      expect(second.body.data.refreshToken).not.toBe(
+        first.body.data.refreshToken
+      );
+      expect((await refresh(dk, second.body.data.refreshToken)).body.code).toBe(
+        0
+      );
+    });
+
+    it('a token replaced by a retry revokes the whole session', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      const replaced = (await refresh(dk, tokens.refreshToken)).body.data;
+      const retry = (await refresh(dk, tokens.refreshToken)).body.data;
+
+      expect((await refresh(dk, replaced.refreshToken)).status).toBe(401);
+      expect((await refresh(dk, retry.refreshToken)).status).toBe(401);
+      const lock = await authed(dk, retry, 'GET', `${SYNC}/lock`);
+      expect(lock.status).toBe(401);
+    });
+
+    it('the previous token without the session device key revokes the session', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      const rotated = (await refresh(dk, tokens.refreshToken)).body.data;
+
+      const res = await refresh(new TestDeviceKey(), tokens.refreshToken);
+      expect(res.status).toBe(401);
+      expect((await refresh(dk, rotated.refreshToken)).status).toBe(401);
     });
 
     it('requires the device key bound to the session', async () => {

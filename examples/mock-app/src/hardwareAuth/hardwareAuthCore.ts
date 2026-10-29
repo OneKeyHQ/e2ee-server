@@ -89,6 +89,8 @@ type ISessionRecord = {
   userId: string;
   jkt: string;
   refreshHash: string;
+  // The token refreshHash replaced; see refresh().
+  previousRefreshHash?: string;
   revoked: boolean;
   createdAt: number;
   lastActiveAt: number;
@@ -229,7 +231,10 @@ export class HardwareAuthCore {
     return jkt;
   }
 
-  private async issueTokens(session: ISessionRecord): Promise<ITokenResponse> {
+  private async issueTokens(
+    session: ISessionRecord,
+    previousRefreshHash?: string
+  ): Promise<ITokenResponse> {
     const now = this.nowSeconds();
     const accessToken = signHs256(
       {
@@ -246,6 +251,7 @@ export class HardwareAuthCore {
     const next: ISessionRecord = {
       ...session,
       refreshHash,
+      previousRefreshHash,
       lastActiveAt: this.opts.now(),
     };
     await this.setJson(
@@ -330,7 +336,23 @@ export class HardwareAuthCore {
     const hash = sha256Hex(params.refreshToken ?? '');
     const reusedSid = await this.opts.store.get(key.refreshUsed(hash));
     if (reusedSid) {
-      // A rotated-out token came back: treat the whole session as stolen.
+      const session = await this.getJson<ISessionRecord>(
+        key.session(reusedSid)
+      );
+      // The reply carrying the current token can be lost (app killed, network
+      // dropped). While that token is unused, its predecessor from the same
+      // device key rotates again and the unused token dies. Not atomic on a
+      // shared store; production must check and rotate in one step.
+      if (
+        session &&
+        !session.revoked &&
+        session.previousRefreshHash === hash &&
+        (await this.verifyDpop(req).catch(() => undefined)) === session.jkt
+      ) {
+        await this.retireRefreshToken(session, session.refreshHash);
+        return this.issueTokens(session, hash);
+      }
+      // Any other rotated-out token: treat the whole session as stolen.
       await this.revokeSession(reusedSid);
       throw unauthorized();
     }
@@ -344,13 +366,18 @@ export class HardwareAuthCore {
     const jkt = await this.verifyDpop(req);
     if (jkt !== session.jkt) throw unauthorized();
 
+    await this.retireRefreshToken(session, hash);
+    return this.issueTokens(session, hash);
+  }
+
+  // Retired tokens stay known so a later use can be judged in refresh().
+  private async retireRefreshToken(session: ISessionRecord, hash: string) {
     await this.opts.store.del(key.refresh(hash));
     await this.opts.store.set(
       key.refreshUsed(hash),
       session.sessionId,
       this.opts.refreshTtlSeconds
     );
-    return this.issueTokens(session);
   }
 
   /** Authenticates a resource request; returns the hardware user and session. */
