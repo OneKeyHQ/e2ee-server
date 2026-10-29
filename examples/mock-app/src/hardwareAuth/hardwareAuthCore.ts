@@ -277,12 +277,16 @@ export class HardwareAuthCore {
     params: { challengeId: string; signature: string },
     req: IDpopRequest
   ): Promise<ITokenResponse & { isNewUser: boolean }> {
-    const challenge = await this.takeJson<IChallengeRecord>(
-      key.challenge(params.challengeId ?? '')
-    );
+    // Check everything before using up the challenge: a request that fails
+    // here (a skewed clock, say) leaves it for a retry instead of making the
+    // user confirm on the device again.
+    const challengeKey = key.challenge(params.challengeId ?? '');
+    const challenge = await this.getJson<IChallengeRecord>(challengeKey);
     if (!challenge || challenge.expiresAt < this.opts.now()) {
       throw unauthorized();
     }
+    const jkt = await this.verifyDpop(req);
+    if (jkt !== challenge.jkt) throw unauthorized();
     const signer = recoverBip137PublicKey(
       challenge.message,
       params.signature ?? ''
@@ -293,8 +297,10 @@ export class HardwareAuthCore {
     ) {
       throw unauthorized();
     }
-    const jkt = await this.verifyDpop(req);
-    if (jkt !== challenge.jkt) throw unauthorized();
+    // One use only: a concurrent request may have taken it meanwhile.
+    if (!(await this.takeJson<IChallengeRecord>(challengeKey))) {
+      throw unauthorized();
+    }
 
     const userId = hardwareUserId(signer);
     const isNewUser = await this.opts.users.ensureUser(userId);
@@ -339,20 +345,20 @@ export class HardwareAuthCore {
       const session = await this.getJson<ISessionRecord>(
         key.session(reusedSid)
       );
+      if (!session || session.revoked) throw unauthorized();
+      // An invalid proof (bad clock, malformed, replayed) shows nothing about
+      // who holds the token, so it must not revoke the session.
+      const jkt = await this.verifyDpop(req);
       // The reply carrying the current token can be lost (app killed, network
       // dropped). While that token is unused, its predecessor from the same
       // device key rotates again and the unused token dies. Not atomic on a
       // shared store; production must check and rotate in one step.
-      if (
-        session &&
-        !session.revoked &&
-        session.previousRefreshHash === hash &&
-        (await this.verifyDpop(req).catch(() => undefined)) === session.jkt
-      ) {
+      if (jkt === session.jkt && session.previousRefreshHash === hash) {
         await this.retireRefreshToken(session, session.refreshHash);
         return this.issueTokens(session, hash);
       }
-      // Any other rotated-out token: treat the whole session as stolen.
+      // Another device key, or an older rotated-out token: treat the whole
+      // session as stolen.
       await this.revokeSession(reusedSid);
       throw unauthorized();
     }

@@ -120,6 +120,31 @@ describe('hardware Cloud Sync protocol contract', () => {
       expect(replay.status).toBe(401);
     });
 
+    it('a failed DPoP check leaves the challenge for a retry', async () => {
+      const device = new TestDevice();
+      const dk = new TestDeviceKey();
+      const { challengeId, message } = await challenge(device, dk);
+      const signature = device.signMessage(message);
+      const skewed = await post(
+        `${AUTH}/verify`,
+        { challengeId, signature },
+        {
+          dpop: dk.dpop({
+            htm: 'POST',
+            path: `${AUTH}/verify`,
+            iat: Math.floor(Date.now() / 1000) - 600,
+          }),
+        }
+      );
+      expect(skewed.status).toBe(401);
+      const retry = await post(
+        `${AUTH}/verify`,
+        { challengeId, signature },
+        { dpop: dk.dpop({ htm: 'POST', path: `${AUTH}/verify` }) }
+      );
+      expect(retry.body.code).toBe(0);
+    });
+
     it('rejects a signature from another key', async () => {
       const dk = new TestDeviceKey();
       const { challengeId, message } = await challenge(new TestDevice(), dk);
@@ -487,6 +512,28 @@ describe('hardware Cloud Sync protocol contract', () => {
       const res = await refresh(new TestDeviceKey(), tokens.refreshToken);
       expect(res.status).toBe(401);
       expect((await refresh(dk, rotated.refreshToken)).status).toBe(401);
+    });
+
+    it('the previous token with an invalid DPoP proof keeps the session', async () => {
+      const dk = new TestDeviceKey();
+      const tokens = await login(new TestDevice(), dk);
+      const rotated = (await refresh(dk, tokens.refreshToken)).body.data;
+
+      const skewed = await post(
+        `${AUTH}/refresh`,
+        { refreshToken: tokens.refreshToken },
+        {
+          dpop: dk.dpop({
+            htm: 'POST',
+            path: `${AUTH}/refresh`,
+            iat: Math.floor(Date.now() / 1000) - 600,
+          }),
+        }
+      );
+      expect(skewed.status).toBe(401);
+      const lock = await authed(dk, rotated, 'GET', `${SYNC}/lock`);
+      expect(lock.body.code).toBe(0);
+      expect((await refresh(dk, rotated.refreshToken)).body.code).toBe(0);
     });
 
     it('requires the device key bound to the session', async () => {
