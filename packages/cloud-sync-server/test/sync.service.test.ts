@@ -402,6 +402,31 @@ describe('PrimeSyncService Unit Tests', () => {
         ).rejects.toThrow(PrimeUserPwdHashInvalidError);
       });
 
+      it('rejects the flush when data was written after expectedNonce', async () => {
+        const user = { userId: 'user1', pwdHash: 'hash-old', nonce: 5 };
+        await expect(
+          syncService.flushDeviceData(user, {
+            nonce: 0,
+            pwdHash: 'hash-new',
+            expectedPwdHash: 'hash-old',
+            expectedNonce: 4,
+            lock,
+            localData: [item],
+          })
+        ).rejects.toThrow(PrimeUserNonceInvalidError);
+        expect(mongodbAdapter.upsertLock).not.toHaveBeenCalled();
+        await expect(
+          syncService.flushDeviceData(user, {
+            nonce: 0,
+            pwdHash: 'hash-new',
+            expectedPwdHash: 'hash-old',
+            expectedNonce: 5,
+            lock,
+            localData: [item],
+          })
+        ).resolves.toMatchObject({ pwdHash: 'hash-new' });
+      });
+
       it('applies when it matches', async () => {
         const user = { userId: 'user1', pwdHash: 'hash-old', nonce: 1 };
         await expect(

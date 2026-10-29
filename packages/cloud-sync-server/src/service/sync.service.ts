@@ -353,6 +353,19 @@ export class PrimeSyncService {
       });
     }
 
+    if (
+      body.expectedNonce !== undefined &&
+      (user.nonce || 0) !== body.expectedNonce
+    ) {
+      const deps = this.getDependencies();
+      throw new deps.errors.PrimeUserNonceInvalidError('', {
+        cause: {
+          a: user.nonce,
+          b: body.expectedNonce,
+        },
+      });
+    }
+
     const isPwdHashExist = body.pwdHash && body.lock;
     if (!isPwdHashExist && body.localData?.length) {
       const deps = this.getDependencies();

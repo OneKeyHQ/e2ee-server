@@ -47,6 +47,11 @@ export class PrimeSyncFlushRequestDTO {
   @Rule(RuleType.string().optional().allow(''))
   expectedPwdHash?: string;
 
+  // Compare-and-swap on the data version: when set, the flush only applies if
+  // nothing was written since the client read this nonce.
+  @Rule(RuleType.number().integer().min(0).optional())
+  expectedNonce?: number;
+
   @Rule(
     RuleType.array()
       .items(getSchema(PrimeSyncUploadItem))
