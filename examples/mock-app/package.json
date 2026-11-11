@@ -18,7 +18,7 @@
     "@midwayjs/koa": "^3.20.0",
     "@midwayjs/logger": "^3.4.2",
     "@midwayjs/validate": "^3.20.12",
-    "mongoose": "^8.17.1"
+    "mongoose": "^8.24.7"
   },
   "devDependencies": {
     "@midwayjs/cli": "^2.1.1",
