@@ -40,6 +40,41 @@ export class MongodbAdapterImpl implements IMongodbAdapter {
     return { ...user }; // Return a copy to prevent mutation
   }
 
+  async createUserIfMissing(userId: string): Promise<boolean> {
+    if (this.userData.has(userId)) return false;
+    if (this.userData.size >= this.MAX_USERS) {
+      throw new Error('User limit reached');
+    }
+    this.userData.set(userId, { userId, nonce: 0, pwdHash: '' });
+    return true;
+  }
+
+  async updateUserFields(userId: string, data: Record<string, any>) {
+    const user = this.userData.get(userId);
+    if (user) this.userData.set(userId, { ...user, ...data });
+  }
+
+  // Local debug view: metadata only, never item data.
+  debugUsers(prefix: string) {
+    return Array.from(this.userData.values())
+      .filter(user => user.userId.startsWith(prefix))
+      .map(user => {
+        const items = this.syncData.get(user.userId) || [];
+        const countByType: Record<string, number> = {};
+        items.forEach(item => {
+          countByType[item.dataType] = (countByType[item.dataType] || 0) + 1;
+        });
+        return {
+          userId: user.userId,
+          nonce: user.nonce,
+          pwdHash: user.pwdHash,
+          hasLock: this.lockData.has(user.userId),
+          itemCount: items.length,
+          countByType,
+        };
+      });
+  }
+
   getDeviceModel(): any {
     return {
       find: () => ({

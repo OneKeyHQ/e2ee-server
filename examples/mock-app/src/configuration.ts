@@ -7,6 +7,7 @@ import { join } from 'path';
 import { MongodbAdapterImpl } from './adapter/mongodb.adapter';
 import { KafkaAdapterImpl } from './adapter/kafka.adapter';
 import { SyncDependenciesProvider } from './service/dependencies.provider';
+import { LocalCorsMiddleware } from './middleware/localCors.middleware';
 
 @Configuration({
   imports: [
@@ -21,6 +22,7 @@ export class MainConfiguration {
   app!: Application;
   
   async onReady(container: IMidwayContainer) {
+    this.app.useMiddleware(LocalCorsMiddleware);
     const mongodbAdapter = await container.getAsync(MongodbAdapterImpl);
     const kafkaAdapter = await container.getAsync(KafkaAdapterImpl);
     const dependenciesProvider = await container.getAsync(SyncDependenciesProvider);
@@ -51,5 +53,9 @@ export class MainConfiguration {
     console.log('  GET  /sync/lock?userId={userId}');
     console.log('  POST /sync/lock?userId={userId}');
     console.log('  POST /sync/flush?userId={userId}');
+    console.log('📝 Hardware Cloud Sync (DPoP token auth):');
+    console.log('  POST /prime/v1/hw-sync/auth/{challenge,verify,refresh,revoke}');
+    console.log('  POST /prime/v1/sync/{download,upload,check,flush}');
+    console.log('  GET  /prime/v1/sync/lock');
   }
 }

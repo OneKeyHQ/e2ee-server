@@ -337,6 +337,110 @@ describe('PrimeSyncService Unit Tests', () => {
       );
     });
 
+    describe('expectedPwdHash', () => {
+      const lock = {
+        key: 'lock',
+        dataType: 'Lock',
+        data: 'wrapped',
+        dataTimestamp: 1000,
+      };
+      const item = {
+        key: 'key1',
+        dataType: 'Account',
+        data: 'data1',
+        dataTimestamp: 1000,
+        isDeleted: false,
+      };
+
+      beforeEach(() => {
+        (mongodbAdapter.findSyncDataByUserId as jest.Mock).mockResolvedValue([]);
+        (mongodbAdapter.bulkWriteSyncData as jest.Mock).mockResolvedValue({
+          upsertedCount: 1,
+          modifiedCount: 0,
+        });
+        (mongodbAdapter.findUserById as jest.Mock).mockResolvedValue({
+          isPrime: false,
+        });
+      });
+
+      it('rejects the flush when the current pwdHash differs', async () => {
+        const user = { userId: 'user1', pwdHash: 'hash-other', nonce: 1 };
+        await expect(
+          syncService.flushDeviceData(user, {
+            nonce: 1,
+            pwdHash: 'hash-new',
+            expectedPwdHash: 'hash-old',
+            lock,
+            localData: [item],
+          })
+        ).rejects.toThrow(PrimeUserPwdHashInvalidError);
+        expect(mongodbAdapter.upsertLock).not.toHaveBeenCalled();
+        expect(mongodbAdapter.deleteSyncDataByUserId).not.toHaveBeenCalled();
+      });
+
+      it("treats '' as no key yet for a first flush", async () => {
+        const created = { userId: 'user1', pwdHash: '', nonce: 0 };
+        await expect(
+          syncService.flushDeviceData(created, {
+            nonce: 0,
+            pwdHash: 'hash-new',
+            expectedPwdHash: '',
+            lock,
+            localData: [item],
+          })
+        ).resolves.toMatchObject({ pwdHash: 'hash-new' });
+
+        const taken = { userId: 'user1', pwdHash: 'hash-first', nonce: 1 };
+        await expect(
+          syncService.flushDeviceData(taken, {
+            nonce: 1,
+            pwdHash: 'hash-new',
+            expectedPwdHash: '',
+            lock,
+            localData: [item],
+          })
+        ).rejects.toThrow(PrimeUserPwdHashInvalidError);
+      });
+
+      it('rejects the flush when data was written after expectedNonce', async () => {
+        const user = { userId: 'user1', pwdHash: 'hash-old', nonce: 5 };
+        await expect(
+          syncService.flushDeviceData(user, {
+            nonce: 0,
+            pwdHash: 'hash-new',
+            expectedPwdHash: 'hash-old',
+            expectedNonce: 4,
+            lock,
+            localData: [item],
+          })
+        ).rejects.toThrow(PrimeUserNonceInvalidError);
+        expect(mongodbAdapter.upsertLock).not.toHaveBeenCalled();
+        await expect(
+          syncService.flushDeviceData(user, {
+            nonce: 0,
+            pwdHash: 'hash-new',
+            expectedPwdHash: 'hash-old',
+            expectedNonce: 5,
+            lock,
+            localData: [item],
+          })
+        ).resolves.toMatchObject({ pwdHash: 'hash-new' });
+      });
+
+      it('applies when it matches', async () => {
+        const user = { userId: 'user1', pwdHash: 'hash-old', nonce: 1 };
+        await expect(
+          syncService.flushDeviceData(user, {
+            nonce: 1,
+            pwdHash: 'hash-new',
+            expectedPwdHash: 'hash-old',
+            lock,
+            localData: [item],
+          })
+        ).resolves.toMatchObject({ pwdHash: 'hash-new' });
+      });
+    });
+
     it('should clear all data when pwdHash and localData are empty', async () => {
       const user = {
         userId: 'user1',
